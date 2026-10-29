@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
 const { normalize, marketLogoBul } = require('./yardimcilar');
 const { tarifBul, durumRapor: tarifDurum } = require('./tarifler');
 const { karmaArama, durumRapor: fiyatDurum } = require('./fiyatlar');
@@ -25,63 +24,55 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 🛠️ Metni (İlçe, İl) Enlem/Boylam'a çeviren fonksiyon
-async function adresKoordinatBul(adres) {
-    try {
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&limit=1`;
-        const response = await axios.get(url, {
-            headers: { 'User-Agent': 'BirimMat-App-TUBITAK' }
-        });
-        if (response.data && response.data.length > 0) {
-            return {
-                lat: parseFloat(response.data[0].lat),
-                lon: parseFloat(response.data[0].lon)
-            };
-        }
-        return null;
-    } catch (error) {
-        console.error('Konum bulma hatası:', error.message);
-        return null;
-    }
-}
+// 🛠️ YENİ: İstanbul İlçe Koordinatları (Harita servisi hata yapmasın diye koda gömdük)
+const ILCE_KOORDINATLARI = {
+    'büyükçekmece': { lat: 41.0201, lon: 28.5850 },
+    'kadıköy': { lat: 40.9908, lon: 29.0270 },
+    'üsküdar': { lat: 41.0263, lon: 29.0154 },
+    'beşiktaş': { lat: 41.0430, lon: 29.0094 },
+    'şişli': { lat: 41.0602, lon: 28.9877 },
+    'fatih': { lat: 41.0186, lon: 28.9398 },
+    'bakırköy': { lat: 40.9819, lon: 28.8772 },
+    'beykoz': { lat: 41.1094, lon: 29.0220 },
+    'maltepe': { lat: 40.9978, lon: 29.1256 },
+    'kartal': { lat: 40.9068, lon: 29.1850 },
+    'pendik': { lat: 40.8775, lon: 29.2342 },
+    'ataşehir': { lat: 40.9922, lon: 29.1244 },
+    'bahçelievler': { lat: 40.9974, lon: 28.8493 },
+    'bağcılar': { lat: 41.0392, lon: 28.8567 },
+    'esenyurt': { lat: 41.0343, lon: 28.6741 },
+    'sultangazi': { lat: 41.1063, lon: 28.8689 },
+    'gaziosmanpaşa': { lat: 41.0586, lon: 28.9091 },
+    'zeytinburnu': { lat: 40.9945, lon: 28.9063 }
+};
 
 app.get('/api/ara', async (req, res) => {
     try {
         const arananUrun = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         const il = String(req.query.il || '').trim();
         const ilce = String(req.query.ilce || '').trim();
-        
-        // Mahalleyi alıyoruz ama haritada kullanmayacağız (kafa karıştırmasın diye)
-        const mahalle = String(req.query.mahalle || '').trim();
 
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
 
-        // Varsayılan konum (Türkiye merkez)
-        let lat = 39.9207; 
-        let lon = 32.8540; 
+        let lat = 41.0082; // Varsayılan: İstanbul Merkez
+        let lon = 28.9784; 
 
-        // 🛠️ KESİN ÇÖZÜM: Sadece İlçe ve İl kullanarak koordinat arıyoruz.
-        if (il || ilce) {
-            let adresMetni = "";
-            if (ilce) adresMetni += `${ilce}, `;
-            if (il) adresMetni += `${il}, Türkiye`;
-            
-            const koordinat = await adresKoordinatBul(adresMetni);
-            
-            if (koordinat) {
-                lat = koordinat.lat;
-                lon = koordinat.lon;
-                console.log(`📍 Konum Bulundu: ${adresMetni} -> (${lat}, ${lon})`);
-            } else {
-                console.log(`⚠️ Konum bulunamadı: ${adresMetni}, varsayılan merkez kullanılıyor.`);
+        // 🛠️ Konum Mantığı: Haritaya sormak yerine kodun içinden bul
+        if (ilce) {
+            const temizIlce = normalize(ilce);
+            if (ILCE_KOORDINATLARI[temizIlce]) {
+                lat = ILCE_KOORDINATLARI[temizIlce].lat;
+                lon = ILCE_KOORDINATLARI[temizIlce].lon;
+                console.log(`📍 Konum Kod içinden Bulundu: ${ilce} -> (${lat}, ${lon})`);
             }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
         const onbellek = cacheGet(cacheKey);
-        if (onbellek) return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
+        
+        // Eğer URL'de ?yenile=1 varsa önbelleği atla
+        if (onbellek && req.query.yenile !== '1') return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
-        // Konumla birlikte API'ye git
         const hamSonuclar = await karmaArama(arananUrun, lat, lon);
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
@@ -102,15 +93,16 @@ app.get('/api/ara', async (req, res) => {
     }
 });
 
+// Şef AI Tarif Modülü
 app.get('/api/tarif', async (req, res) => {
     try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         if (!yemekAdi || yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
-
+        
         const cacheKey = 'tarif:' + normalize(yemekAdi);
         const onbellek = cacheGet(cacheKey);
         if (onbellek) return res.json(onbellek);
-
+        
         const sonuc = await tarifBul(yemekAdi);
         if (!sonuc) return res.status(404).json({ success: false, message: 'Tarif bulunamadı.' });
         
@@ -122,13 +114,15 @@ app.get('/api/tarif', async (req, res) => {
     }
 });
 
+// Fiyat Takip (Arka plan)
 app.post('/api/fiyat-kontrol', async (req, res) => {
     try {
         const urunler = req.body.urunler || [];
         if (urunler.length === 0) return res.json({ success: true, sonuclar: [] });
-
+        
         const sonuclar = [];
         for (const urunAdi of urunler) {
+            // Arka plan kontrolü için İstanbul merkez kullanıyoruz
             const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
             if (hamSonuclar && hamSonuclar.length > 0) {
                 const enIyiSonuc = hamSonuclar[0]; 
