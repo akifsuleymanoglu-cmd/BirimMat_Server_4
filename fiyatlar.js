@@ -1,14 +1,14 @@
 const axios = require('axios');
 
-async function marketFiyatiAra(arananUrun, lat, lon) {
+async function marketFiyatiAra(arananUrun, lat, lon, distance = 15) {
     try {
-        console.log(`🔎 [API] Aranıyor: "${arananUrun}" (Konum: ${lat}, ${lon})`);
+        console.log(`🔎 [API] Aranıyor: "${arananUrun}" (Konum: ${lat}, ${lon}, Mesafe: ${distance}km)`);
         
         const response = await axios.post('https://api.marketfiyati.org.tr/api/v2/search', {
             keywords: arananUrun,
             latitude: lat,
             longitude: lon,
-            distance: 50, // 🛠️ 50 km yarıçapla ara (ilçeleri kapsasın diye)
+            distance: distance, 
             size: 50
         }, { timeout: 10000 });
 
@@ -21,13 +21,9 @@ async function marketFiyatiAra(arananUrun, lat, lon) {
             const baslik = item.productName || item.title || 'Bilinmeyen Ürün';
             const resim = item.imageUrl || null;
 
-            // 🛠️ Şube isimlerini OLDUĞU GİBİ bırakıyoruz (Konum bazlı arama için)
             if (item.productDepotInfoList && item.productDepotInfoList.length > 0) {
                 item.productDepotInfoList.forEach(market => {
-                    
                     let subeAdi = market.marketName || market.market || market.depotName || market.storeName || market.merchantName || market.name;
-
-                    // Eğer API isim vermezse, resim linkinden markayı bul (Yedek plan)
                     if (!subeAdi || subeAdi.trim() === '') {
                         const u = (resim || '').toLowerCase();
                         if (u.includes('migros')) subeAdi = 'Migros';
@@ -72,8 +68,8 @@ async function marketFiyatiAra(arananUrun, lat, lon) {
 const durum = { marketfiyati: { basarili: 0, hatali: 0 } };
 const durumRapor = () => JSON.parse(JSON.stringify(durum));
 
-async function karmaArama(arananUrun, lat, lon) {
-    const hamListe = await marketFiyatiAra(arananUrun, lat, lon);
+async function karmaArama(arananUrun, lat, lon, distance) {
+    const hamListe = await marketFiyatiAra(arananUrun, lat, lon, distance);
     if (hamListe.length === 0) return [];
     durum.marketfiyati.basarili++;
     return hamListe;
