@@ -1,7 +1,7 @@
-// server.js - BirimMat backend (API Destekli Nihai Sürüm)
 const express = require('express');
 const cors = require('cors');
-const { normalize, sonuclariHazirla, marketLogoBul } = require('./yardimcilar');
+const axios = require('axios'); // 🛠️ Konum bulmak için eklendi
+const { normalize, marketLogoBul } = require('./yardimcilar');
 const { tarifBul, durumRapor: tarifDurum } = require('./tarifler');
 const { karmaArama, durumRapor: fiyatDurum } = require('./fiyatlar');
 
@@ -25,19 +25,60 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 1. Market Fiyatları Arama
+// 🛠️ YENİ: Metni (İl, İlçe, Mahalle) Enlem/Boylam'a çeviren fonksiyon
+async function adresKoordinatBul(adres) {
+    try {
+        // OpenStreetMap Nominatim API
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&limit=1`;
+        const response = await axios.get(url, {
+            headers: { 'User-Agent': 'BirimMat-App-TUBITAK' }
+        });
+        if (response.data && response.data.length > 0) {
+            return {
+                lat: parseFloat(response.data[0].lat),
+                lon: parseFloat(response.data[0].lon)
+            };
+        }
+        return null;
+    } catch (error) {
+        console.error('Konum bulma hatası:', error.message);
+        return null;
+    }
+}
+
 app.get('/api/ara', async (req, res) => {
     try {
         const arananUrun = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
+        const il = String(req.query.il || '').trim();
+        const ilce = String(req.query.ilce || '').trim();
+        const mahalle = String(req.query.mahalle || '').trim();
+
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
 
-        const cacheKey = 'ara:' + normalize(arananUrun);
+        // Varsayılan konum (Türkiye merkez)
+        let lat = 39.9207; 
+        let lon = 32.8540; 
+
+        // Eğer kullanıcı konum girdiyse, koordinatları bul
+        if (il || ilce || mahalle) {
+            const adresMetni = `${mahalle} ${ilce} ${il}`.trim();
+            const koordinat = await adresKoordinatBul(adresMetni);
+            if (koordinat) {
+                lat = koordinat.lat;
+                lon = koordinat.lon;
+                console.log(`📍 Konum Bulundu: ${adresMetni} -> (${lat}, ${lon})`);
+            } else {
+                console.log(`⚠️ Konum bulunamadı: ${adresMetni}, varsayılan merkez kullanılıyor.`);
+            }
+        }
+
+        const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
         const onbellek = cacheGet(cacheKey);
         if (onbellek) return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
-        const hamSonuclar = await karmaArama(arananUrun);
+        // Konumla birlikte API'ye git
+        const hamSonuclar = await karmaArama(arananUrun, lat, lon);
         
-        // 🛠️ FİLTRELER DEVRE DIŞI BIRAKILDI
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
         const finalSonuclar = hamSonuclar.map((item, index) => ({
@@ -51,11 +92,11 @@ app.get('/api/ara', async (req, res) => {
         cacheSet(cacheKey, finalSonuclar);
         res.json({ success: true, query: arananUrun, results: finalSonuclar });
     } catch (error) {
+        console.error(error);
         res.status(500).json({ success: false, message: 'Sunucu hatası oluştu.' });
     }
 });
 
-// 2. Şef AI Tarif
 app.get('/api/tarif', async (req, res) => {
     try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
@@ -76,7 +117,6 @@ app.get('/api/tarif', async (req, res) => {
     }
 });
 
-// 3. Toplu Fiyat Kontrol Modülü (Arka plan takip için)
 app.post('/api/fiyat-kontrol', async (req, res) => {
     try {
         const urunler = req.body.urunler || [];
@@ -84,7 +124,8 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
 
         const sonuclar = [];
         for (const urunAdi of urunler) {
-            const hamSonuclar = await karmaArama(urunAdi);
+            // Arka plan kontrolü için varsayılan merkez kullanıyoruz
+            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
             if (hamSonuclar && hamSonuclar.length > 0) {
                 const enIyiSonuc = hamSonuclar[0]; 
                 sonuclar.push({ arananAd: urunAdi, guncelFiyat: enIyiSonuc.price, market: enIyiSonuc.market });
@@ -107,7 +148,6 @@ app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamad
 if (require.main === module) {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
-        console.log(`⚡ Sistem Artık TÜBİTAK API'si ile çalışıyor.`);
     });
 }
 
