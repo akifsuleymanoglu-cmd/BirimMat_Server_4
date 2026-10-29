@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios'); // 🛠️ Konum bulmak için eklendi
+const axios = require('axios');
 const { normalize, marketLogoBul } = require('./yardimcilar');
 const { tarifBul, durumRapor: tarifDurum } = require('./tarifler');
 const { karmaArama, durumRapor: fiyatDurum } = require('./fiyatlar');
@@ -25,10 +25,9 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 🛠️ YENİ: Metni (İl, İlçe, Mahalle) Enlem/Boylam'a çeviren fonksiyon
+// 🛠️ Metni (İlçe, İl) Enlem/Boylam'a çeviren fonksiyon
 async function adresKoordinatBul(adres) {
     try {
-        // OpenStreetMap Nominatim API
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&limit=1`;
         const response = await axios.get(url, {
             headers: { 'User-Agent': 'BirimMat-App-TUBITAK' }
@@ -51,6 +50,8 @@ app.get('/api/ara', async (req, res) => {
         const arananUrun = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         const il = String(req.query.il || '').trim();
         const ilce = String(req.query.ilce || '').trim();
+        
+        // Mahalleyi alıyoruz ama haritada kullanmayacağız (kafa karıştırmasın diye)
         const mahalle = String(req.query.mahalle || '').trim();
 
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
@@ -59,32 +60,21 @@ app.get('/api/ara', async (req, res) => {
         let lat = 39.9207; 
         let lon = 32.8540; 
 
-        // Eğer kullanıcı konum girdiyse, koordinatları bul
-        if (il || ilce || mahalle) {
-    let adresMetni = "";
-    
-    // 🛠️ Akıllı arama mantığı: Eğer mahalle yazılmışsa onu da ekle
-    if (mahalle) adresMetni += `${mahalle} Mahallesi, `;
-    if (ilce) adresMetni += `${ilce}, `;
-    if (il) adresMetni += `${il}, Türkiye`;
-    
-    // Haritada karmaşıklık olmaması için aramayı yap
-    let koordinat = await adresKoordinatBul(adresMetni);
-
-    // 🛠️ KURTARICI ADIM: Eğer mahalle yüzünden yanlış yere düştüyse (veya bulamadıysa), 
-    // sadece ilçe ve il ile tekrar ara!
-    if (!koordinat && ilce && il) {
-        adresMetni = `${ilce}, ${il}, Türkiye`;
-        koordinat = await adresKoordinatBul(adresMetni);
-    }
-    
-    if (koordinat) {
-        lat = koordinat.lat;
-        lon = koordinat.lon;
-        console.log(`📍 Konum Bulundu: ${adresMetni} -> (${lat}, ${lon})`);
-    } else {
-        console.log(`⚠️ Konum bulunamadı: ${adresMetni}, varsayılan merkez kullanılıyor.`);
-    }
+        // 🛠️ KESİN ÇÖZÜM: Sadece İlçe ve İl kullanarak koordinat arıyoruz.
+        if (il || ilce) {
+            let adresMetni = "";
+            if (ilce) adresMetni += `${ilce}, `;
+            if (il) adresMetni += `${il}, Türkiye`;
+            
+            const koordinat = await adresKoordinatBul(adresMetni);
+            
+            if (koordinat) {
+                lat = koordinat.lat;
+                lon = koordinat.lon;
+                console.log(`📍 Konum Bulundu: ${adresMetni} -> (${lat}, ${lon})`);
+            } else {
+                console.log(`⚠️ Konum bulunamadı: ${adresMetni}, varsayılan merkez kullanılıyor.`);
+            }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
@@ -139,7 +129,6 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
 
         const sonuclar = [];
         for (const urunAdi of urunler) {
-            // Arka plan kontrolü için varsayılan merkez kullanıyoruz
             const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
             if (hamSonuclar && hamSonuclar.length > 0) {
                 const enIyiSonuc = hamSonuclar[0]; 
