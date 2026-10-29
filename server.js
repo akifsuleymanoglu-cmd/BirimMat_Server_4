@@ -61,7 +61,7 @@ app.get('/api/ara', async (req, res) => {
 
         // Eğer kullanıcı konum girdiyse, koordinatları bul
         if (il || ilce || mahalle) {
-            const adresMetni = `${mahalle} ${ilce} ${il}`.trim();
+            const adresMetni = `${mahalle} Mahallesi, ${ilce}, ${il}, Türkiye`.trim();
             const koordinat = await adresKoordinatBul(adresMetni);
             if (koordinat) {
                 lat = koordinat.lat;
