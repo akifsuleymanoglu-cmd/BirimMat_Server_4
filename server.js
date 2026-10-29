@@ -36,10 +36,11 @@ app.get('/api/ara', async (req, res) => {
         if (onbellek) return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
         const hamSonuclar = await karmaArama(arananUrun);
+        
+        // 🛠️ FİLTRELER DEVRE DIŞI BIRAKILDI
+        if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
-
-const finalSonuclar = hamSonuclar.map((item, index) => ({
+        const finalSonuclar = hamSonuclar.map((item, index) => ({
             id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
             market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
             isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
