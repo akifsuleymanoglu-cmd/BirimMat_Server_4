@@ -61,15 +61,30 @@ app.get('/api/ara', async (req, res) => {
 
         // Eğer kullanıcı konum girdiyse, koordinatları bul
         if (il || ilce || mahalle) {
-            const adresMetni = `${mahalle} Mahallesi, ${ilce}, ${il}, Türkiye`.trim();
-            const koordinat = await adresKoordinatBul(adresMetni);
-            if (koordinat) {
-                lat = koordinat.lat;
-                lon = koordinat.lon;
-                console.log(`📍 Konum Bulundu: ${adresMetni} -> (${lat}, ${lon})`);
-            } else {
-                console.log(`⚠️ Konum bulunamadı: ${adresMetni}, varsayılan merkez kullanılıyor.`);
-            }
+    let adresMetni = "";
+    
+    // 🛠️ Akıllı arama mantığı: Eğer mahalle yazılmışsa onu da ekle
+    if (mahalle) adresMetni += `${mahalle} Mahallesi, `;
+    if (ilce) adresMetni += `${ilce}, `;
+    if (il) adresMetni += `${il}, Türkiye`;
+    
+    // Haritada karmaşıklık olmaması için aramayı yap
+    let koordinat = await adresKoordinatBul(adresMetni);
+
+    // 🛠️ KURTARICI ADIM: Eğer mahalle yüzünden yanlış yere düştüyse (veya bulamadıysa), 
+    // sadece ilçe ve il ile tekrar ara!
+    if (!koordinat && ilce && il) {
+        adresMetni = `${ilce}, ${il}, Türkiye`;
+        koordinat = await adresKoordinatBul(adresMetni);
+    }
+    
+    if (koordinat) {
+        lat = koordinat.lat;
+        lon = koordinat.lon;
+        console.log(`📍 Konum Bulundu: ${adresMetni} -> (${lat}, ${lon})`);
+    } else {
+        console.log(`⚠️ Konum bulunamadı: ${adresMetni}, varsayılan merkez kullanılıyor.`);
+    }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
