@@ -1,6 +1,4 @@
-// fiyatlar.js - TÜBİTAK Market Fiyatı API'sini kullanan motor
 const axios = require('axios');
-const { esnekAlakaFiltresi, cekirdekSorgu, sirala, topluPaketMi, birimFiyatHesapla } = require('./yardimcilar');
 
 async function marketFiyatiAra(arananUrun) {
     try {
@@ -15,18 +13,21 @@ async function marketFiyatiAra(arananUrun) {
         }, { timeout: 10000 });
 
         const icerik = response.data.content || [];
-        
-        const hamListe = icerik.map(item => ({
-            title: item.productName,
-            price: item.price ? `${item.price} TL` : '0 TL',
-            market: item.marketName || 'Bilinmeyen Market',
-            link: `https://marketfiyati.org.tr/`,
-            unitPrice: item.unitPrice ? `${item.unitPrice} TL/${item.unitName}` : null,
-            kaynak: 'marketfiyati',
-            productImage: item.imageUrl || item.productImage || item.image || null 
-        }));
+        console.log(`📊 [API] ${icerik.length} ham ürün bulundu.`);
 
-        console.log(`📊 [API] ${hamListe.length} ham ürün bulundu.`);
+        // 🛠️ API'den gelen veriyi esnek bir şekilde eşleştir (Hata payını sıfırlıyoruz)
+        const hamListe = icerik.map(item => {
+            return {
+                title: item.productName || item.name || item.title || 'Bilinmeyen Ürün',
+                price: item.price ? `${item.price} TL` : (item.fiyat ? `${item.fiyat} TL` : '0 TL'),
+                market: item.marketName || item.market || 'Bilinmeyen Market',
+                link: `https://marketfiyati.org.tr/`,
+                unitPrice: item.unitPrice ? `${item.unitPrice} TL/${item.unitName || 'Adet'}` : null,
+                kaynak: 'marketfiyati',
+                productImage: item.imageUrl || item.image || null 
+            };
+        });
+
         return hamListe;
 
     } catch (error) {
@@ -39,22 +40,12 @@ const durum = { marketfiyati: { basarili: 0, hatali: 0 } };
 const durumRapor = () => JSON.parse(JSON.stringify(durum));
 
 async function karmaArama(arananUrun) {
-    const zaman = new Date().toISOString();
+    // Doğrudan API'ye gidip geleni döndürüyoruz, arada filtre yok.
     const hamListe = await marketFiyatiAra(arananUrun);
     if (hamListe.length === 0) return [];
 
     durum.marketfiyati.basarili++;
-    
-    const sonuclar = hamListe.filter((i) => i && i.title && i.price).map((i) => ({
-        ...i,
-        isBulk: typeof i.isBulk === 'boolean' ? i.isBulk : topluPaketMi(i.title),
-        unitPrice: i.unitPrice || birimFiyatHesapla(i.title, i.price) || null,
-        storeIcon: '🛒',
-        link: i.link || '#',
-        guncelleme: i.guncelleme || zaman
-    }));
-
-    return sonuclar;
+    return hamListe;
 }
 
 module.exports = { karmaArama, durumRapor };
