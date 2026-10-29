@@ -169,13 +169,39 @@ app.get('/api/ara', async (req, res) => {
         const hamSonuclar = await karmaArama(arananUrun, lat, lon, distance);
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        const finalSonuclar = hamSonuclar.map((item, index) => ({
-            id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
-            market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
-            isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
-            marketLogo: marketLogoBul(item.market),
-            productImage: item.productImage
-        }));
+        // 🛠️ AKILLI FİLTRE: TÜBİTAK'ın yanlış ilçeden getirdiği verileri engelle
+let filtrelenmisSonuclar = hamSonuclar;
+
+if (ilce) {
+    const temizIlce = normalize(ilce); // Örn: "buyukcekmece"
+    // Sadece market isminde ilçe adı geçenleri veya yakın komşu ilçeleri tut
+    filtrelenmisSonuclar = hamSonuclar.filter(item => {
+        const marketAdi = normalize(item.market);
+        // Eğer market isminde aradığımız ilçe adı geçiyorsa (örn: "buyukcekmece migros") tut
+        if (marketAdi.includes(temizIlce)) return true;
+        
+        // (İsteğe bağlı) Eğer aradığın ilçe Büyükçekmece ise, hemen yanındaki ilçeleri de kabul et (Silivri, Beylikdüzü vb.)
+        if (temizIlce === 'buyukcekmece' && (marketAdi.includes('silivri') || marketAdi.includes('beylikduzu') || marketAdi.includes('avcilar'))) {
+            return true;
+        }
+        return false;
+    });
+}
+
+if (filtrelenmisSonuclar.length === 0) {
+    return res.status(404).json({ 
+        success: false, 
+        message: `${ilce || il} bölgesinde bu ürünün fiyatını bildiren bir market bulunamadı. (TÜBİTAK API'si sadece merkezi bölgelerde veri sağlıyor olabilir).`
+    });
+}
+
+const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
+    id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
+    market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
+    isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
+    marketLogo: marketLogoBul(item.market),
+    productImage: item.productImage
+}));
 
         cacheSet(cacheKey, finalSonuclar);
         res.json({ success: true, query: arananUrun, results: finalSonuclar });
