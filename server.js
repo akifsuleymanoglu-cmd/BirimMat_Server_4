@@ -25,49 +25,10 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// =====================================================================
-// KATMAN 1: TÜRKİYEAPI (Resmi ve Yerli Veri - Öncelikli)
-// =====================================================================
-async function turkiyeApiKoordinatBul(mahalle, ilce, il) {
-    try {
-        // 1. İl ID'sini bul
-        const ilRes = await axios.get(`https://api.turkiyeapi.dev/v2/provinces?name=${encodeURIComponent(il)}`, { timeout: 5000 });
-        const bulunanIl = ilRes.data.data?.[0];
-        if (!bulunanIl) return null;
-
-        // 2. İlçe ID'sini bul
-        const ilceRes = await axios.get(`https://api.turkiyeapi.dev/v2/districts?provinceId=${bulunanIl.id}&name=${encodeURIComponent(ilce)}`, { timeout: 5000 });
-        const bulunanIlce = ilceRes.data.data?.[0];
-        if (!bulunanIlce) return null;
-
-        // 3. Mahalle ID'sini bul ve koordinatları al
-        const mahRes = await axios.get(`https://api.turkiyeapi.dev/v2/neighborhoods?districtId=${bulunanIlce.id}&name=${encodeURIComponent(mahalle)}`, { timeout: 5000 });
-        const bulunanMahalle = mahRes.data.data?.[0];
-
-        if (bulunanMahalle && bulunanMahalle.latitude && bulunanMahalle.longitude) {
-            return { lat: parseFloat(bulunanMahalle.latitude), lon: parseFloat(bulunanMahalle.longitude), kaynak: 'TürkiyeAPI (Mahalle)' };
-        }
-
-        // Mahalle bulunamazsa ilçe merkezini döndür
-        if (bulunanIlce.latitude && bulunanIlce.longitude) {
-            return { lat: parseFloat(bulunanIlce.latitude), lon: parseFloat(bulunanIlce.longitude), kaynak: 'TürkiyeAPI (İlçe)' };
-        }
-        return null;
-    } catch (error) {
-        console.error('TürkiyeAPI hatası:', error.message);
-        return null;
-    }
-}
-
-// =====================================================================
-// KATMAN 2: GEOAPIFY (Ücretsiz, Kredi Kartsız, 3000 İstek/Gün)
-// =====================================================================
+// 🛠️ GEOAPIFY İLE KONUM BULMA
 async function geoapifyKoordinatBul(mahalle, ilce, il) {
     const apiKey = process.env.GEOAPIFY_API_KEY;
-    if (!apiKey) {
-        console.log('Geoapify API anahtarı bulunamadı (GEOAPIFY_API_KEY).');
-        return null;
-    }
+    if (!apiKey) return null;
     try {
         let adresMetni = "";
         if (mahalle) adresMetni += `${mahalle} Mahallesi, `;
@@ -79,57 +40,11 @@ async function geoapifyKoordinatBul(mahalle, ilce, il) {
         const response = await axios.get(url, { timeout: 6000 });
 
         if (response.data && response.data.features && response.data.features.length > 0) {
-            const feature = response.data.features[0];
-            const props = feature.properties;
+            const props = response.data.features[0].properties;
             return { lat: props.lat, lon: props.lon, kaynak: 'Geoapify' };
         }
         return null;
-    } catch (error) {
-        console.error('Geoapify hatası:', error.message);
-        return null;
-    }
-}
-
-// =====================================================================
-// KATMAN 3: OPENSTREETMAP (Son Yedek Plan)
-// =====================================================================
-async function openStreetMapKoordinatBul(ilce, il) {
-    try {
-        let adresMetni = "";
-        if (ilce) adresMetni += `${ilce}, `;
-        if (il) adresMetni += `${il}, `;
-        adresMetni += "Türkiye";
-
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adresMetni)}&format=json&limit=1`;
-        const response = await axios.get(url, {
-            headers: { 'User-Agent': 'BirimMat-App-TUBITAK' },
-            timeout: 5000
-        });
-
-        if (response.data && response.data.length > 0) {
-            return { lat: parseFloat(response.data[0].lat), lon: parseFloat(response.data[0].lon), kaynak: 'OpenStreetMap' };
-        }
-        return null;
-    } catch (error) {
-        return null;
-    }
-}
-
-// =====================================================================
-// MERKEZİ KONUM BULUCU (Tüm Katmanları Sırayla Dener)
-// =====================================================================
-async function konumBul(mahalle, ilce, il) {
-    let koordinat = await turkiyeApiKoordinatBul(mahalle, ilce, il);
-    if (koordinat) return koordinat;
-
-    koordinat = await geoapifyKoordinatBul(mahalle, ilce, il);
-    if (koordinat) return koordinat;
-
-    if (ilce || il) {
-        koordinat = await openStreetMapKoordinatBul(ilce, il);
-        if (koordinat) return koordinat;
-    }
-    return null;
+    } catch (error) { return null; }
 }
 
 app.get('/api/ara', async (req, res) => {
@@ -141,67 +56,39 @@ app.get('/api/ara', async (req, res) => {
 
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
 
-        let lat = 39.9207;
-        let lon = 32.8540;
-        let konumKaynagi = "Varsayılan";
+        let lat = 41.0082; // Varsayılan İstanbul
+        let lon = 28.9784; 
 
         let distance = 50;
-        if (mahalle) distance = 5;
-        else if (ilce) distance = 15;
+        if (mahalle) distance = 15;
+        else if (ilce) distance = 20;
 
         if (il || ilce || mahalle) {
-            const koordinat = await konumBul(mahalle, ilce, il);
+            const koordinat = await geoapifyKoordinatBul(mahalle, ilce, il);
             if (koordinat) {
                 lat = koordinat.lat;
                 lon = koordinat.lon;
-                konumKaynagi = koordinat.kaynak;
-                console.log(`📍 Konum Bulundu (${konumKaynagi}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon}) | Mesafe: ${distance}km`);
-            } else {
-                console.log(`⚠️ Hiçbir servis konumu bulamadı, varsayılan merkez kullanılıyor.`);
+                console.log(`📍 Konum Bulundu (${koordinat.kaynak}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
             }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3) + ':' + distance;
         const onbellek = cacheGet(cacheKey);
-
+        
         if (onbellek && req.query.yenile !== '1') return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
         const hamSonuclar = await karmaArama(arananUrun, lat, lon, distance);
+        
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ AKILLI FİLTRE: TÜBİTAK'ın yanlış ilçeden getirdiği verileri engelle
-let filtrelenmisSonuclar = hamSonuclar;
-
-if (ilce) {
-    const temizIlce = normalize(ilce); // Örn: "buyukcekmece"
-    // Sadece market isminde ilçe adı geçenleri veya yakın komşu ilçeleri tut
-    filtrelenmisSonuclar = hamSonuclar.filter(item => {
-        const marketAdi = normalize(item.market);
-        // Eğer market isminde aradığımız ilçe adı geçiyorsa (örn: "buyukcekmece migros") tut
-        if (marketAdi.includes(temizIlce)) return true;
-        
-        // (İsteğe bağlı) Eğer aradığın ilçe Büyükçekmece ise, hemen yanındaki ilçeleri de kabul et (Silivri, Beylikdüzü vb.)
-        if (temizIlce === 'buyukcekmece' && (marketAdi.includes('silivri') || marketAdi.includes('beylikduzu') || marketAdi.includes('avcilar'))) {
-            return true;
-        }
-        return false;
-    });
-}
-
-if (filtrelenmisSonuclar.length === 0) {
-    return res.status(404).json({ 
-        success: false, 
-        message: `${ilce || il} bölgesinde bu ürünün fiyatını bildiren bir market bulunamadı. (TÜBİTAK API'si sadece merkezi bölgelerde veri sağlıyor olabilir).`
-    });
-}
-
-const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
-    id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
-    market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
-    isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
-    marketLogo: marketLogoBul(item.market),
-    productImage: item.productImage
-}));
+        // 🛠️ FİLTRE SİLİNDİ! TÜBİTAK'tan ne geldiyse ekrana basıyoruz.
+        const finalSonuclar = hamSonuclar.map((item, index) => ({
+            id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
+            market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
+            isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
+            marketLogo: marketLogoBul(item.market),
+            productImage: item.productImage
+        }));
 
         cacheSet(cacheKey, finalSonuclar);
         res.json({ success: true, query: arananUrun, results: finalSonuclar });
@@ -211,6 +98,7 @@ const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
     }
 });
 
+// Şef AI ve Fiyat Takip (Değişmedi)
 app.get('/api/tarif', async (req, res) => {
     try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
