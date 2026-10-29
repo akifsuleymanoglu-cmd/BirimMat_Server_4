@@ -8,7 +8,7 @@ async function marketFiyatiAra(arananUrun, lat, lon) {
             keywords: arananUrun,
             latitude: lat,
             longitude: lon,
-            distance: 10,
+            distance: 50, // 🛠️ 50 km yarıçapla ara (ilçeleri kapsasın diye)
             size: 50
         }, { timeout: 10000 });
 
