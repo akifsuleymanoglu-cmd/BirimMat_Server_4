@@ -25,47 +25,60 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 🛠️ AKILLI HARİTA SİSTEMİ: Mahalleyi kullanır ama ilçe ile doğrular
-async function adresKoordinatBul(mahalle, ilce, il) {
+// 🛠️ SADECE TÜRKİYEAPI KULLANAN HİYERARŞİK KONUM BULUCU
+async function turkiyeApiKoordinatBul(mahalle, ilce, il) {
     try {
-        // Adres metnini birleştir
-        let adresMetni = "";
-        if (mahalle) adresMetni += `${mahalle}, `;
-        if (ilce) adresMetni += `${ilce}, `;
-        if (il) adresMetni += `${il}, `;
-        adresMetni += "Türkiye";
+        const temizIl = il ? normalize(il) : '';
+        const temizIlce = ilce ? normalize(ilce) : '';
+        const temizMahalle = mahalle ? normalize(mahalle) : '';
 
-        // limit=5 yapıyoruz ki harita bize birden fazla sonuç döndürsün
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adresMetni)}&format=json&limit=5`;
-        const response = await axios.get(url, {
-            headers: { 'User-Agent': 'BirimMat-App-TUBITAK' },
-            timeout: 6000
-        });
+        // 1. İl ID'sini bul
+        let ilId = null;
+        const ilRes = await axios.get(`https://api.turkiyeapi.dev/api/v2/provinces?name=${encodeURIComponent(il)}`, { timeout: 5000 });
+        if (ilRes.data && ilRes.data.data && ilRes.data.data.length > 0) {
+            ilId = ilRes.data.data[0].id;
+        }
 
-        if (response.data && response.data.length > 0) {
-            // Eğer ilçe girilmişse, sonuçların içinden ilçe adı geçen doğru sonucu seç
-            if (ilce) {
-                const temizIlce = normalize(ilce);
-                // Dönen sonuçların display_name (açıklama) kısmında ilçe adı geçiyor mu?
-                const dogruSonuc = response.data.find(item => normalize(item.display_name).includes(temizIlce));
-                
-                if (dogruSonuc) {
-                    return {
-                        lat: parseFloat(dogruSonuc.lat),
-                        lon: parseFloat(dogruSonuc.lon)
-                    };
+        // 2. İlçe ID'sini bul (Eğer il varsa)
+        let ilceId = null;
+        if (ilId && ilce) {
+            const ilceRes = await axios.get(`https://api.turkiyeapi.dev/api/v2/districts?provinceId=${ilId}&name=${encodeURIComponent(ilce)}`, { timeout: 5000 });
+            if (ilceRes.data && ilceRes.data.data && ilceRes.data.data.length > 0) {
+                ilceId = ilceRes.data.data[0].id;
+            }
+        }
+
+        // 3. Mahalle koordinatını bul (Eğer ilçe varsa)
+        if (ilceId && mahalle) {
+            const mahRes = await axios.get(`https://api.turkiyeapi.dev/api/v2/neighborhoods?districtId=${ilceId}&name=${encodeURIComponent(mahalle)}`, { timeout: 5000 });
+            if (mahRes.data && mahRes.data.data && mahRes.data.data.length > 0) {
+                const mah = mahRes.data.data[0];
+                if (mah.latitude && mah.longitude) {
+                    return { lat: parseFloat(mah.latitude), lon: parseFloat(mah.longitude), kaynak: 'TürkiyeAPI (Mahalle)' };
                 }
             }
-
-            // Eğer ilçe geçmiyorsa (veya sadece il girildiyse) ilk sonucu al
-            return {
-                lat: parseFloat(response.data[0].lat),
-                lon: parseFloat(response.data[0].lon)
-            };
         }
+
+        // 4. Eğer mahalle bulunamazsa, İlçe merkezini kullan
+        if (ilceId) {
+            const ilceRes = await axios.get(`https://api.turkiyeapi.dev/api/v2/districts?provinceId=${ilId}`, { timeout: 5000 });
+            const detay = ilceRes.data.data.find(d => d.id === ilceId);
+            if (detay && detay.latitude && detay.longitude) {
+                return { lat: parseFloat(detay.latitude), lon: parseFloat(detay.longitude), kaynak: 'TürkiyeAPI (İlçe)' };
+            }
+        }
+
+        // 5. Eğer sadece il girildiyse, İl merkezini kullan
+        if (ilId) {
+            const ilDetayRes = await axios.get(`https://api.turkiyeapi.dev/api/v2/provinces/${ilId}`, { timeout: 5000 });
+            if (ilDetayRes.data && ilDetayRes.data.data && ilDetayRes.data.data.latitude) {
+                return { lat: parseFloat(ilDetayRes.data.data.latitude), lon: parseFloat(ilDetayRes.data.data.longitude), kaynak: 'TürkiyeAPI (İl)' };
+            }
+        }
+
         return null;
     } catch (error) {
-        console.error('Harita servisi hatası:', error.message);
+        console.error('TürkiyeAPI hatası:', error.message);
         return null;
     }
 }
@@ -75,33 +88,39 @@ app.get('/api/ara', async (req, res) => {
         const arananUrun = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         const il = String(req.query.il || '').trim();
         const ilce = String(req.query.ilce || '').trim();
-        const mahalle = String(req.query.mahalle || '').trim(); // Artık mahalleyi de alıyoruz
+        const mahalle = String(req.query.mahalle || '').trim();
 
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
 
-        // Varsayılan konum (Türkiye merkez)
-        let lat = 39.9207; 
+        let lat = 39.9207; // Varsayılan Türkiye merkez
         let lon = 32.8540; 
+        let konumKaynagi = "Varsayılan (Türkiye)";
+
+        // 🛠️ Dinamik Mesafe: Mahalle girdiyse dar, ilçe girdiyse orta, il girdiyse geniş ara
+        let distance = 50; 
+        if (mahalle) distance = 5;      
+        else if (ilce) distance = 15;   
 
         if (il || ilce || mahalle) {
-            const koordinat = await adresKoordinatBul(mahalle, ilce, il);
+            const koordinat = await turkiyeApiKoordinatBul(mahalle, ilce, il);
             
             if (koordinat) {
                 lat = koordinat.lat;
                 lon = koordinat.lon;
-                console.log(`📍 Harita Konumu Bulundu: ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
+                konumKaynagi = koordinat.kaynak;
+                console.log(`📍 Konum Bulundu (${konumKaynagi}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon}) | Mesafe: ${distance}km`);
             } else {
-                console.log(`⚠️ Harita konumu bulamadı, varsayılan merkez kullanılıyor.`);
+                console.log(`⚠️ TürkiyeAPI konumu bulamadı, varsayılan merkez kullanılıyor.`);
             }
         }
 
-        const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
+        const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3) + ':' + distance;
         const onbellek = cacheGet(cacheKey);
         
         if (onbellek && req.query.yenile !== '1') return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
-        // 50km yarıçapla ara (fiyatlar.js içinde distance: 50 olmalı)
-        const hamSonuclar = await karmaArama(arananUrun, lat, lon);
+        // TÜBİTAK API'sine dinamik mesafeyi gönder
+        const hamSonuclar = await karmaArama(arananUrun, lat, lon, distance);
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
@@ -150,7 +169,7 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
         
         const sonuclar = [];
         for (const urunAdi of urunler) {
-            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
+            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784, 50);
             if (hamSonuclar && hamSonuclar.length > 0) {
                 const enIyiSonuc = hamSonuclar[0]; 
                 sonuclar.push({ arananAd: urunAdi, guncelFiyat: enIyiSonuc.price, market: enIyiSonuc.market });
