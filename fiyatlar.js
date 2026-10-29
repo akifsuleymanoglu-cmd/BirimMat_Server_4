@@ -17,18 +17,37 @@ async function marketFiyatiAra(arananUrun) {
 
         const hamListe = [];
 
-        // API'den gelen her bir ürünü döngüye al
         icerik.forEach(item => {
             const baslik = item.productName || item.title || 'Bilinmeyen Ürün';
             const resim = item.imageUrl || null;
 
-            // 🛠️ API'de fiyatlar ve marketler 'productDepotInfoList' içinde gelir
+            // Resim linkinden market tahmini yapma fonksiyonu
+            const resimdenMarketBul = (url) => {
+                if (!url) return null;
+                const u = url.toLowerCase();
+                if (u.includes('migros')) return 'Migros';
+                if (u.includes('a101')) return 'A101';
+                if (u.includes('carrefour')) return 'CarrefourSA';
+                if (u.includes('bim')) return 'BİM';
+                if (u.includes('sok')) return 'Şok';
+                if (u.includes('hakmar')) return 'Hakmar';
+                return null;
+            };
+
             if (item.productDepotInfoList && item.productDepotInfoList.length > 0) {
                 item.productDepotInfoList.forEach(market => {
+                    // 🛠️ BÜTÜN OLASI ALAN İSİMLERİNİ DENE
+                    let marketAdi = market.marketName || market.market || market.depotName || market.storeName || market.merchantName || market.name;
+                    
+                    // Eğer API'den isim gelmediyse, resim linkinden bulmayı dene
+                    if (!marketAdi || marketAdi.trim() === '') {
+                        marketAdi = resimdenMarketBul(resim) || 'Bilinmeyen Market';
+                    }
+
                     hamListe.push({
                         title: baslik,
                         price: market.price ? `${market.price} TL` : '0 TL',
-                        market: market.marketName || market.market || 'Bilinmeyen Market',
+                        market: marketAdi,
                         unitPrice: market.unitPrice ? `${market.unitPrice} TL/${market.unitName || 'Adet'}` : null,
                         link: `https://marketfiyati.org.tr/`,
                         kaynak: 'marketfiyati',
@@ -36,11 +55,10 @@ async function marketFiyatiAra(arananUrun) {
                     });
                 });
             } else {
-                // Eğer iç içe liste yoksa (nadiren de olsa), eski yöntemle dene
                 hamListe.push({
                     title: baslik,
                     price: item.price ? `${item.price} TL` : '0 TL',
-                    market: item.marketName || item.market || 'Bilinmeyen Market',
+                    market: resimdenMarketBul(resim) || item.marketName || item.market || 'Bilinmeyen Market',
                     unitPrice: null,
                     link: `https://marketfiyati.org.tr/`,
                     kaynak: 'marketfiyati',
