@@ -1,16 +1,16 @@
 const axios = require('axios');
 
-async function marketFiyatiAra(arananUrun, lat, lon, distance = 20) {
+async function marketFiyatiAra(arananUrun, lat, lon) {
     try {
-        console.log(`🔎 [API] Aranıyor: "${arananUrun}" (Konum: ${lat}, ${lon}, Mesafe: ${distance}km)`);
+        console.log(`🔎 [API] Aranıyor: "${arananUrun}" (Konum: ${lat}, ${lon})`);
         
         const response = await axios.post('https://api.marketfiyati.org.tr/api/v2/search', {
             keywords: arananUrun,
             latitude: lat,
             longitude: lon,
-            distance: distance, 
-            size: 500 // 🛠️ 50 yerine 500 yaptık! Büyükçekmece'deki marketlerin de listeye girmesi için.
-        }, { timeout: 10000 });
+            distance: 1000, // 🛠️ Tüm Türkiye'yi taraması için 1000 km
+            size: 1000 // 🛠️ Bolca sonuç gelsin diye 1000
+        }, { timeout: 15000 });
 
         const icerik = response.data.content || [];
         console.log(`📊 [API] ${icerik.length} ham ürün bulundu.`);
@@ -68,8 +68,8 @@ async function marketFiyatiAra(arananUrun, lat, lon, distance = 20) {
 const durum = { marketfiyati: { basarili: 0, hatali: 0 } };
 const durumRapor = () => JSON.parse(JSON.stringify(durum));
 
-async function karmaArama(arananUrun, lat, lon, distance) {
-    const hamListe = await marketFiyatiAra(arananUrun, lat, lon, distance);
+async function karmaArama(arananUrun, lat, lon) {
+    const hamListe = await marketFiyatiAra(arananUrun, lat, lon);
     if (hamListe.length === 0) return [];
     durum.marketfiyati.basarili++;
     return hamListe;
