@@ -10,7 +10,6 @@ function norm(t) {
 }
 
 // "57.5 TL" -> 57.5 | "57,50 TL" -> 57.5 | "1.234,50 TL" -> 1234.5 | 24.5 -> 24.5
-// (Eski kod noktayı siliyordu: 57.5 -> 575. Hatanın asıl sebebi buydu.)
 function fiyatCevir(f) {
     if (typeof f === 'number') return isFinite(f) ? f : 999999;
     let t = String(f || '').replace(/[^0-9,.]/g, '');
@@ -50,14 +49,21 @@ function kelimeler(metin) {
         .split(/\s+/).filter((k) => k.length > 0);
 }
 
-// Aranan ürünün SADECE aynı ürün olan sonuçlarını kabul eder:
-// marka/ürün kelimeleri tam kelime olarak geçmeli ("tat" kelimesi "tatlı" içinde sayılmaz),
-// miktar birebir aynı olmalı (1 lt <-> 200 ml karışmaz), koli/çoklu paket ayrı tutulur.
+// DÜZELTME 1: "adet", "li", "lu" gibi paket belirteçlerini eşleştirmeden önce süzen yardımcı fonksiyon
+const YOKSAYILACAK_KELIMELER = new Set(['adet', 'li', 'lu', 'x', 'tane']);
+function temizKelimeler(metin) {
+    return kelimeler(metin).filter(k => !YOKSAYILACAK_KELIMELER.has(k));
+}
+
 function ayniUrunMu(arananBaslik, gelenBaslik) {
-    const aranan = kelimeler(arananBaslik);
-    const gelen = kelimeler(gelenBaslik);
+    // "15 adet" ve "15'li" eşleşmesi için temizKelimeler kullanıyoruz
+    const aranan = temizKelimeler(arananBaslik);
+    const gelen = temizKelimeler(gelenBaslik);
+    
     if (aranan.length === 0) return false;
     const gelenSet = new Set(gelen);
+    
+    // Kelimelerin tamamı eşleşiyor mu? (Örn: "tat" kelimesi "tatlı" içinde sayılmasın diye startsWith kontrolü var)
     const kelimeTamam = aranan.every((k) =>
         gelenSet.has(k) || (k.length >= 5 && gelen.some((g) => g.startsWith(k))));
     if (!kelimeTamam) return false;
@@ -132,6 +138,9 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
     });
 
     const marketVerisi = {};
+    // DÜZELTME 2: Tüm marketleri en baştan başlatıyoruz ki eksik olsalar bile sepette görünsünler
+    TUM_MARKETLER.forEach(m => { marketVerisi[m] = {}; });
+
     const hibritSepet = [];
     const bulunamayanlar = [];
     let hibritToplam = 0;
@@ -140,20 +149,23 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
         const marketBazli = aramaSonuclari[i];
         let enUcuz = null;
         for (const [market, kayit] of Object.entries(marketBazli)) {
-            (marketVerisi[market] = marketVerisi[market] || {})[baslik] = kayit;
+            if (!marketVerisi[market]) marketVerisi[market] = {}; 
+            marketVerisi[market][baslik] = kayit;
             if (!enUcuz || kayit.fiyatSayi < enUcuz.fiyatSayi) enUcuz = { ...kayit, market };
         }
         if (enUcuz) {
             hibritSepet.push({ urunAdi: baslik, market: enUcuz.market, title: enUcuz.title, price: enUcuz.price });
             hibritToplam += enUcuz.fiyatSayi;
         } else {
-            bulunamayanlar.push(baslik); // yanlış ürünle doldurma, açıkça "bulunamadı" de
+            bulunamayanlar.push(baslik); 
         }
     });
 
     const liste = [];
     for (const market of TUM_MARKETLER) {
-        if (!marketVerisi[market]) continue;
+        // DÜZELTME 3: Eski koddaki "if (!marketVerisi[market]) continue;" satırını sildik. 
+        // Böylece BİM gibi eksik kalan marketler de listelenecek.
+        
         let toplam = 0;
         const bulunan = [];
         const eksik = [];
@@ -162,11 +174,13 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
             if (kayit) { toplam += kayit.fiyatSayi; bulunan.push(kayit); }
             else eksik.push(baslik);
         }
+        
         liste.push({
             market, toplam: toplam.toFixed(2) + ' TL', toplamSayi: toplam,
             bulunanUrunler: bulunan, eksikUrunler: eksik, tamSepet: eksik.length === 0
         });
     }
+    
     // Eksiksiz sepetler önce (ucuzdan pahalıya), sonra en az eksiği olanlar
     liste.sort((a, b) =>
         a.eksikUrunler.length - b.eksikUrunler.length || a.toplamSayi - b.toplamSayi);
