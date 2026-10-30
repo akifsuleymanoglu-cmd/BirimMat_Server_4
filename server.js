@@ -44,7 +44,10 @@ async function geoapifyKoordinatBul(mahalle, ilce, il) {
             return { lat: props.lat, lon: props.lon, kaynak: 'Geoapify' };
         }
         return null;
-    } catch (error) { return null; }
+    } catch (error) { 
+        console.error('Geoapify Hatası:', error.message);
+        return null; 
+    }
 }
 
 app.get('/api/ara', async (req, res) => {
@@ -64,7 +67,9 @@ app.get('/api/ara', async (req, res) => {
             if (koordinat) {
                 lat = koordinat.lat;
                 lon = koordinat.lon;
-                console.log(`📍 Konum Bulundu (${koordinat.kaynagi || 'Geoapify'}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
+                console.log(`📍 Konum Bulundu (${koordinat.kaynak}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
+            } else {
+                console.log(`⚠️ Konum bulunamadı, varsayılan İstanbul merkez kullanılıyor.`);
             }
         }
 
@@ -77,21 +82,32 @@ app.get('/api/ara', async (req, res) => {
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ KESİN FİLTRE: Sadece aradığımız ilçe ve komşularını kabul et
+        // 🛠️ AKILLI DİNAMİK FİLTRE
         let filtrelenmisSonuclar = hamSonuclar;
         
         if (ilce) {
             const temizIlce = normalize(ilce);
             
+            // İstanbul'un genel ilçeleri (Bir marketin adında bunlardan biri geçiyorsa, o başka bir ilçededir)
+            const bilinenIlceler = ['uskudar', 'kadikoy', 'umraniye', 'atasehir', 'besiktas', 'sisli', 'fatih', 'beyoglu', 'maltepe', 'kartal', 'acibadem', 'sultanbeyli', 'pendik', 'buyukcekmece', 'silivri', 'beylikduzu', 'avcilar', 'esenyurt', 'bakirkoy', 'zeytinburnu', 'bagcilar', 'bahcelievler', 'kucukcekmece'];
+
             filtrelenmisSonuclar = hamSonuclar.filter(item => {
                 const marketAdi = normalize(item.market);
                 
+                // 1. Kural: Eğer market adında senin aradığın ilçe geçiyorsa KESİN KABUL ET.
                 if (marketAdi.includes(temizIlce)) return true;
-                
+
+                // 2. Kural: Eğer Büyükçekmece arıyorsan, komşularını da kabul et.
                 if (temizIlce === 'buyukcekmece' && (marketAdi.includes('silivri') || marketAdi.includes('beylikduzu') || marketAdi.includes('avcilar') || marketAdi.includes('esenyurt'))) {
                     return true;
                 }
-                return false; // Üsküdar, Kadıköy vs. direkt çöpe!
+
+                // 3. Kural (En Önemlisi): Market adında HİÇBİR ilçe adı geçmiyorsa (sadece "Migros" yazıyorsa) KABUL ET.
+                const baskaIlceVarMi = bilinenIlceler.some(baskaIlce => marketAdi.includes(baskaIlce));
+                if (!baskaIlceVarMi) return true;
+
+                // 4. Kural: Eğer yukarıdakilerin hiçbiri değilse (örneğin başka bir ilçenin adı geçiyorsa) ÇÖPE AT.
+                return false; 
             });
         }
 
@@ -103,9 +119,18 @@ app.get('/api/ara', async (req, res) => {
         }
 
         const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
-            id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
-            market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
-            isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
+            id: index + 1, 
+            title: item.title, 
+            price: item.price, 
+            unitPrice: item.unitPrice,
+            market: item.market, 
+            kaynak: item.kaynak, 
+            storeIcon: item.storeIcon || '🛒', 
+            link: item.link,
+            isBulk: !!item.isBulk, 
+            supheli: !!item.supheli, 
+            benzer: !!item.benzer, 
+            guncelleme: item.guncelleme,
             marketLogo: marketLogoBul(item.market),
             productImage: item.productImage
         }));
