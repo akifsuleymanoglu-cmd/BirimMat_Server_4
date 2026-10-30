@@ -115,7 +115,7 @@ app.get('/api/ara', async (req, res) => {
     }
 });
 
-// 2. AKILLI SEPET (BOYUT VE HACİM KORUMALI EŞLEŞTİRME)
+// 2. AKILLI SEPET (GÜVENLİ VE HATASIZ VERSİYON)
 app.post('/api/sepet-optimize', async (req, res) => {
     try {
         const istenenUrunler = req.body.urunler || [];
@@ -125,48 +125,29 @@ app.post('/api/sepet-optimize', async (req, res) => {
         let hibritSepet = [];
         let hibritToplam = 0;
 
-        // Metin içinden gramaj/hacim birimini yakalamak için yardımcı fonksiyon (Örn: "1 lt", "500 gr", "390 gr")
-        const birimBulici = (metin) => {
-            const m = metin.toLowerCase().match(/(\d+)\s*(g|gr|gram|kg|kilogram|ml|l|lt|litre)/);
-            return m ? m[0].replace(/\s+/g, '') : null;
-        };
-
         for (const urunObj of istenenUrunler) {
-            const aranacakBaslik = typeof urunObj === 'string' ? urunObj : urunObj.baslik;
+            const aranacakBaslik = typeof urunObj === 'string' ? urunObj : (urunObj && urunObj.baslik ? urunObj.baslik : '');
             if (!aranacakBaslik) continue;
 
             const hamSonuclar = await karmaArama(aranacakBaslik, 41.0082, 28.9784);
             
-            if (hamSonuclar.length > 0) {
+            if (hamSonuclar && hamSonuclar.length > 0) {
                 let enUcuzUrun = null;
                 let enUcuzFiyat = 999999;
                 
-                const arananBirim = birimBulici(aranacakBaslik);
-                const arananKelimeler = normalize(aranacakBaslik).split(' ').filter(w => w.length > 2);
-
                 hamSonuclar.forEach(item => {
-                    const gelenBaslikNorm = normalize(item.title);
-                    const gelenBirim = birimBulici(item.title);
-
-                    // 🛠️ HASSAS EŞLEŞTİRME KURALI:
-                    // Eğer aranan üründe spesifik bir miktar varsa, gelen sonuçta da aynı miktar olmalı.
-                    if (arananBirim && gelenBirim && arananBirim !== gelenBirim) {
-                        return; // Boyutlar uyuşmuyorsa (örn: 1 Lt vs 200 ml) kesinlikle atla!
-                    }
-
-                    const kelimeEslesti = arananKelimeler.some(kelime => gelenBaslikNorm.includes(kelime));
-                    if (!kelimeEslesti) return;
-
-                    const marketAdi = normalize(item.market); 
-                    const resimUrl = (item.productImage || '').toLowerCase();
-                    const aranacakMetin = marketAdi + " " + resimUrl; 
+                    if (!item || !item.title || !item.price) return;
                     
+                    const marketAdi = normalize(String(item.market || '')); 
                     let anaMarka = "Diğer";
+                    
+                    const aranacakMetin = marketAdi + " " + String(item.productImage || '').toLowerCase();
                     if (aranacakMetin.includes('migros')) anaMarka = 'Migros';
                     else if (aranacakMetin.includes('a101')) anaMarka = 'A101';
                     else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
                     else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
                     else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
+                    
                     if (anaMarka === "Diğer") return; 
 
                     const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
@@ -201,7 +182,7 @@ app.post('/api/sepet-optimize', async (req, res) => {
             let eksikUrunler = [];
 
             istenenUrunler.forEach(urun => {
-                const baslik = typeof urun === 'string' ? urun : urun.baslik;
+                const baslik = typeof urun === 'string' ? urun : (urun && urun.baslik ? urun.baslik : '');
                 if (!baslik) return;
 
                 if (marketVerisi[market][baslik]) {
@@ -230,8 +211,8 @@ app.post('/api/sepet-optimize', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Sepet Hatası:', error);
-        res.status(500).json({ success: false, message: 'Sepet hesaplanırken hata oluştu.' });
+        console.error('Sepet Optimizasyon Kritik Hata:', error);
+        res.status(500).json({ success: false, message: 'Sunucu optimizasyon hatası: ' + error.message });
     }
 });
 
