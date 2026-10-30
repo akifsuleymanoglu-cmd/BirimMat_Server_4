@@ -115,94 +115,6 @@ app.get('/api/ara', async (req, res) => {
     }
 });
 
-// 2. AKILLI SEPET (BİREBİR EŞLEŞME KORUMALI)
-app.post('/api/sepet-optimize', async (req, res) => {
-    try {
-        const istenenUrunler = req.body.urunler || [];
-        if (istenenUrunler.length === 0) return res.status(400).json({ success: false, message: 'Sepet boş.' });
-
-        let marketVerisi = {}; 
-        let hibritSepet = [];
-        let hibritToplam = 0;
-
-        for (const urunObj of istenenUrunler) {
-            // HTML'den obje veya string gelirse diye kontrol
-            const aranacakBaslik = typeof urunObj === 'string' ? urunObj : urunObj.baslik;
-            if (!aranacakBaslik) continue;
-
-            const hamSonuclar = await karmaArama(aranacakBaslik, 41.0082, 28.9784);
-            
-            if (hamSonuclar.length > 0) {
-                let enUcuzUrun = null;
-                let enUcuzFiyat = 999999;
-                
-                // Harf, boşluk ve noktalama işaretlerini temizleyip tam eşleşme arıyoruz
-                const temizle = (t) => normalize(t).replace(/[^a-z0-9]/g, '');
-                const arananTemiz = temizle(aranacakBaslik);
-                const arananKelimeler = normalize(aranacakBaslik).split(' ').filter(w => w.length > 2);
-
-                hamSonuclar.forEach(item => {
-                    const gelenTemiz = temizle(item.title);
-                    
-                    // 🛠️ KESİN EŞLEŞME KURALI:
-                    // Ya tamamen aynıdır, ya da aranan ürünün tüm kelimelerini (2 harften uzun) içeriyordur.
-                    const tamEslesme = (arananTemiz === gelenTemiz) || (arananKelimeler.length > 0 && arananKelimeler.every(kelime => normalize(item.title).includes(kelime)));
-                    
-                    if (!tamEslesme) return; 
-
-                    const marketAdi = normalize(item.market); 
-                    const resimUrl = (item.productImage || '').toLowerCase();
-                    const aranacakMetin = marketAdi + " " + resimUrl; 
-                    
-                    let anaMarka = "Diğer";
-                    if (aranacakMetin.includes('migros')) anaMarka = 'Migros';
-                    else if (aranacakMetin.includes('a101')) anaMarka = 'A101';
-                    else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
-                    else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
-                    else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
-                    if (anaMarka === "Diğer") return; 
-
-                    const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
-
-                    if (!marketVerisi[anaMarka]) marketVerisi[anaMarka] = {};
-                    
-                    if (!marketVerisi[anaMarka][aranacakBaslik] || fiyatSayi < marketVerisi[anaMarka][aranacakBaslik].fiyatSayi) {
-                        marketVerisi[anaMarka][aranacakBaslik] = { title: item.title, fiyatSayi, price: item.price };
-                    }
-
-                    if (fiyatSayi < enUcuzFiyat) {
-                        enUcuzFiyat = fiyatSayi;
-                        enUcuzUrun = { urunAdi: aranacakBaslik, market: anaMarka, title: item.title, price: item.price };
-                    }
-                });
-
-                if (enUcuzUrun) {
-                    hibritSepet.push(enUcuzUrun);
-                    hibritToplam += enUcuzFiyat;
-                }
-            }
-        }
-
-        let tekMarketListesi = [];
-        const tumMarketler = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA'];
-
-        tumMarketler.forEach(market => {
-            if (!marketVerisi[market]) return;
-
-            let marketToplam = 0;
-            let bulunanUrunler = [];
-            let eksikUrunler = [];
-
-            istenenUrunler.forEach(urun => {
-                const baslik = typeof urun === 'string' ? urun : urun.baslik;
-                if (!baslik) return;
-
-                if (marketVerisi[market][baslik]) {
-                    marketToplam += marketVerisi[market][baslik].fiyatSayi;
-                    bulunanUrunler.push(marketVerisi[market][baslik]);
-                } else {
-                    eksikUrunler.push(baslik);
-                }
 // 2. AKILLI SEPET (BOYUT VE HACİM KORUMALI EŞLEŞTİRME)
 app.post('/api/sepet-optimize', async (req, res) => {
     try {
@@ -237,13 +149,11 @@ app.post('/api/sepet-optimize', async (req, res) => {
                     const gelenBirim = birimBulici(item.title);
 
                     // 🛠️ HASSAS EŞLEŞTİRME KURALI:
-                    // 1. Eğer aranan üründe spesifik bir miktar (örn: 1lt, 390gr) varsa, 
-                    // taranan sonuçta da bu miktar geçmeli veya birimler uyuşmalı.
+                    // Eğer aranan üründe spesifik bir miktar varsa, gelen sonuçta da aynı miktar olmalı.
                     if (arananBirim && gelenBirim && arananBirim !== gelenBirim) {
                         return; // Boyutlar uyuşmuyorsa (örn: 1 Lt vs 200 ml) kesinlikle atla!
                     }
 
-                    // 2. En azından ana kelimelerden biri (marka veya ürün cinsi) eşleşmeli
                     const kelimeEslesti = arananKelimeler.some(kelime => gelenBaslikNorm.includes(kelime));
                     if (!kelimeEslesti) return;
 
@@ -316,7 +226,7 @@ app.post('/api/sepet-optimize', async (req, res) => {
         res.json({
             success: true,
             hibrit: { sepet: hibritSepet, toplam: hibritToplam.toFixed(2) + " TL" },
-            tekMarketler: tekMarketListesi
+            tekMarketListesi: tekMarketListesi
         });
 
     } catch (error) {
@@ -324,7 +234,9 @@ app.post('/api/sepet-optimize', async (req, res) => {
         res.status(500).json({ success: false, message: 'Sepet hesaplanırken hata oluştu.' });
     }
 });
-                try {
+
+app.get('/api/tarif', async (req, res) => {
+    try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         if (!yemekAdi || yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
         const cacheKey = 'tarif:' + normalize(yemekAdi);
@@ -365,5 +277,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-
-                             
