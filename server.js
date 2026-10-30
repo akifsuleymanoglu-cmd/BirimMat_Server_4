@@ -77,8 +77,8 @@ app.get('/api/ara', async (req, res) => {
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ MARKA TEMİZLEYİCİ VE EN UCUZ FİYAT BULUCU
-        let markayaGoreEnUcuz = new Map();
+        // 🛠️ TÜM SONUÇLARI LİSTELE VE ŞUBE İSİMLERİNİ TEMİZLE
+        let filtrelenmisSonuclar = [];
 
         hamSonuclar.forEach(item => {
             const marketAdi = normalize(item.market); 
@@ -99,21 +99,30 @@ app.get('/api/ara', async (req, res) => {
             else if (aranacakMetin.includes('mopas') || aranacakMetin.includes('mopaş')) anaMarka = 'Mopaş';
             else if (aranacakMetin.includes('onur')) anaMarka = 'Onur Market';
             else {
-                // Eğer resimde veya isimde bilinen bir marka yoksa, TÜBİTAK'ın verdiği ham ismi kullan
                 anaMarka = item.market.trim(); 
             }
 
-            // Fiyatı sayıya çevir (En ucuzu bulmak için)
+            // Fiyatı sayıya çevir (Sıralama yapabilmek için)
             const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
 
-            // Aynı markadan daha ucuzu geldiyse onu kaydet
-            if (!markayaGoreEnUcuz.has(anaMarka) || fiyatSayi < markayaGoreEnUcuz.get(anaMarka).fiyatSayi) {
-                markayaGoreEnUcuz.set(anaMarka, { ...item, market: anaMarka, fiyatSayi });
-            }
+            // Her gelen ürünü listeye ekle (Sadece marka ismini temizledik)
+            filtrelenmisSonuclar.push({
+                ...item,
+                market: anaMarka,
+                fiyatSayi: fiyatSayi
+            });
         });
 
-        // Listedekileri fiyata göre ucuzdan pahalıya sırala
-        let filtrelenmisSonuclar = Array.from(markayaGoreEnUcuz.values());
+        // Tamamen aynı olan kayıtları (Aynı market + Aynı ürün + Aynı fiyat) tekile düşür
+        const gorulenler = new Set();
+        filtrelenmisSonuclar = filtrelenmisSonuclar.filter(item => {
+            const kilit = normalize(item.market) + "|" + normalize(item.title) + "|" + item.price;
+            if (gorulenler.has(kilit)) return false;
+            gorulenler.add(kilit);
+            return true;
+        });
+
+        // En ucuz en üstte olacak şekilde fiyata göre sırala
         filtrelenmisSonuclar.sort((a, b) => a.fiyatSayi - b.fiyatSayi);
 
         if (filtrelenmisSonuclar.length === 0) {
@@ -125,7 +134,7 @@ app.get('/api/ara', async (req, res) => {
             title: item.title, 
             price: item.price, 
             unitPrice: item.unitPrice,
-            market: item.market, // Artık sadece ana marka (Migros, A101 vs.)
+            market: item.market, 
             kaynak: item.kaynak, 
             storeIcon: item.storeIcon || '🛒', 
             link: item.link,
