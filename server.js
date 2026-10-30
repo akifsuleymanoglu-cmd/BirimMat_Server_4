@@ -25,7 +25,7 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 🛠️ GEOAPIFY İLE KONUM BULMA (İsteğe Bağlı)
+// 🛠️ GEOAPIFY İLE KONUM BULMA
 async function geoapifyKoordinatBul(mahalle, ilce, il) {
     const apiKey = process.env.GEOAPIFY_API_KEY;
     if (!apiKey) return null;
@@ -82,20 +82,25 @@ app.get('/api/ara', async (req, res) => {
 
         hamSonuclar.forEach(item => {
             const marketAdi = normalize(item.market); 
-            let anaMarka = "Bilinmeyen Market";
+            const resimUrl = (item.productImage || '').toLowerCase();
+            
+            // Hem şube isminde hem de resim linkinde ana markayı arıyoruz
+            const aranacakMetin = marketAdi + " " + resimUrl; 
 
-            // Gelen şube isminin içinden ana markayı bul
-            if (marketAdi.includes('migros')) anaMarka = 'Migros';
-            else if (marketAdi.includes('a101')) anaMarka = 'A101';
-            else if (marketAdi.includes('bim')) anaMarka = 'BİM';
-            else if (marketAdi.includes('sok') || marketAdi.includes('şok')) anaMarka = 'Şok';
-            else if (marketAdi.includes('carrefour')) anaMarka = 'CarrefourSA';
-            else if (marketAdi.includes('hakmar')) anaMarka = 'Hakmar';
-            else if (marketAdi.includes('tarim kredi') || marketAdi.includes('tarım kredi')) anaMarka = 'Tarım Kredi';
-            else if (marketAdi.includes('mopas') || marketAdi.includes('mopaş')) anaMarka = 'Mopaş';
-            else if (marketAdi.includes('onur')) anaMarka = 'Onur Market';
+            let anaMarka = "Diğer Market";
+
+            if (aranacakMetin.includes('migros')) anaMarka = 'Migros';
+            else if (aranacakMetin.includes('a101')) anaMarka = 'A101';
+            else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
+            else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
+            else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
+            else if (aranacakMetin.includes('hakmar')) anaMarka = 'Hakmar';
+            else if (aranacakMetin.includes('tarim_kredi') || aranacakMetin.includes('tarım kredi')) anaMarka = 'Tarım Kredi';
+            else if (aranacakMetin.includes('mopas') || aranacakMetin.includes('mopaş')) anaMarka = 'Mopaş';
+            else if (aranacakMetin.includes('onur')) anaMarka = 'Onur Market';
             else {
-                anaMarka = item.market.split(' ')[0]; // Bilinmeyen markaysa ilk kelimeyi al
+                // Eğer resimde veya isimde bilinen bir marka yoksa, TÜBİTAK'ın verdiği ham ismi kullan
+                anaMarka = item.market.trim(); 
             }
 
             // Fiyatı sayıya çevir (En ucuzu bulmak için)
