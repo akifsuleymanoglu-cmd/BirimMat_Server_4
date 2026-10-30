@@ -6,8 +6,8 @@ async function marketFiyatiAra(arananUrun, lat, lon) {
         
         const response = await axios.post('https://api.marketfiyati.org.tr/api/v2/search', {
             keywords: arananUrun,
-            latitude: lat,
-            longitude: lon,
+            latitude: lat || 41.0082, // Konum gelmezse İstanbul
+            longitude: lon || 28.9784,
             distance: 1000, // 🛠️ Tüm Türkiye'yi taraması için 1000 km
             size: 1000 // 🛠️ Bolca sonuç gelsin diye 1000
         }, { timeout: 15000 });
@@ -25,13 +25,7 @@ async function marketFiyatiAra(arananUrun, lat, lon) {
                 item.productDepotInfoList.forEach(market => {
                     let subeAdi = market.marketName || market.market || market.depotName || market.storeName || market.merchantName || market.name;
                     if (!subeAdi || subeAdi.trim() === '') {
-                        const u = (resim || '').toLowerCase();
-                        if (u.includes('migros')) subeAdi = 'Migros';
-                        else if (u.includes('a101')) subeAdi = 'A101';
-                        else if (u.includes('carrefour')) subeAdi = 'CarrefourSA';
-                        else if (u.includes('bim')) subeAdi = 'BİM';
-                        else if (u.includes('sok')) subeAdi = 'Şok';
-                        else subeAdi = 'Bilinmeyen Şube';
+                        subeAdi = 'Bilinmeyen Şube';
                     }
 
                     hamListe.push({
