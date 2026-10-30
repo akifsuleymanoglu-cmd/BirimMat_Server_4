@@ -13,7 +13,6 @@ app.disable('x-powered-by');
 app.use(cors());
 app.use(express.json({ limit: '10kb' }));
 
-// 🛠️ Önbellek (Cache) Sistemi
 const cache = new Map();
 function cacheGet(key) {
     const kayit = cache.get(key);
@@ -26,7 +25,6 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 🛠️ GEOAPIFY İLE KONUM BULMA
 async function geoapifyKoordinatBul(mahalle, ilce, il) {
     const apiKey = process.env.GEOAPIFY_API_KEY;
     if (!apiKey) return null;
@@ -45,15 +43,10 @@ async function geoapifyKoordinatBul(mahalle, ilce, il) {
             return { lat: props.lat, lon: props.lon };
         }
         return null;
-    } catch (error) { 
-        console.error('Geoapify Hatası:', error.message);
-        return null; 
-    }
+    } catch (error) { return null; }
 }
 
-// =====================================================================
-// 1. MARKET ARAMA VE MARKA TEMİZLEME (/api/ara)
-// =====================================================================
+// 1. MARKET ARAMA VE MARKA TEMİZLEME
 app.get('/api/ara', async (req, res) => {
     try {
         const arananUrun = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
@@ -68,25 +61,17 @@ app.get('/api/ara', async (req, res) => {
 
         if (il || ilce || mahalle) {
             const koordinat = await geoapifyKoordinatBul(mahalle, ilce, il);
-            if (koordinat) {
-                lat = koordinat.lat;
-                lon = koordinat.lon;
-                console.log(`📍 Konum Bulundu: ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
-            }
+            if (koordinat) { lat = koordinat.lat; lon = koordinat.lon; }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
         const onbellek = cacheGet(cacheKey);
-        
         if (onbellek && req.query.yenile !== '1') return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
         const hamSonuclar = await karmaArama(arananUrun, lat, lon);
-        
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ ŞUBE İSMİ TEMİZLEYİCİ (Sadece ana markayı tutar)
         let filtrelenmisSonuclar = [];
-
         hamSonuclar.forEach(item => {
             const marketAdi = normalize(item.market); 
             const resimUrl = (item.productImage || '').toLowerCase();
@@ -99,17 +84,12 @@ app.get('/api/ara', async (req, res) => {
             else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
             else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
             else if (aranacakMetin.includes('hakmar')) anaMarka = 'Hakmar';
-            else if (aranacakMetin.includes('tarim_kredi') || aranacakMetin.includes('tarım kredi')) anaMarka = 'Tarım Kredi';
-            else if (aranacakMetin.includes('mopas') || aranacakMetin.includes('mopaş')) anaMarka = 'Mopaş';
-            else if (aranacakMetin.includes('onur')) anaMarka = 'Onur Market';
             else anaMarka = item.market.trim(); 
 
             const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
-
             filtrelenmisSonuclar.push({ ...item, market: anaMarka, fiyatSayi });
         });
 
-        // Aynı market, ürün ve fiyat tamamen aynıysa tekile düşür
         const gorulenler = new Set();
         filtrelenmisSonuclar = filtrelenmisSonuclar.filter(item => {
             const kilit = normalize(item.market) + "|" + normalize(item.title) + "|" + item.price;
@@ -118,10 +98,7 @@ app.get('/api/ara', async (req, res) => {
             return true;
         });
 
-        // En ucuzdan pahalıya sırala
         filtrelenmisSonuclar.sort((a, b) => a.fiyatSayi - b.fiyatSayi);
-
-        if (filtrelenmisSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
         const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
             id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
@@ -134,14 +111,11 @@ app.get('/api/ara', async (req, res) => {
         cacheSet(cacheKey, finalSonuclar);
         res.json({ success: true, query: arananUrun, results: finalSonuclar });
     } catch (error) {
-        console.error(error);
         res.status(500).json({ success: false, message: 'Sunucu hatası oluştu.' });
     }
 });
 
-// =====================================================================
-// 2. AKILLI SEPET OPTİMİZASYON MOTORU (/api/sepet-optimize)
-// =====================================================================
+// 2. AKILLI SEPET (BİREBİR EŞLEŞME KORUMALI)
 app.post('/api/sepet-optimize', async (req, res) => {
     try {
         const istenenUrunler = req.body.urunler || [];
@@ -151,26 +125,30 @@ app.post('/api/sepet-optimize', async (req, res) => {
         let hibritSepet = [];
         let hibritToplam = 0;
 
-        for (const urun of istenenUrunler) {
-            const aranacakBaslik = urun.baslik;
-            console.log(`🔎 Sepet için aranıyor: ${aranacakBaslik}`);
-            
+        for (const urunObj of istenenUrunler) {
+            // HTML'den obje veya string gelirse diye kontrol
+            const aranacakBaslik = typeof urunObj === 'string' ? urunObj : urunObj.baslik;
+            if (!aranacakBaslik) continue;
+
             const hamSonuclar = await karmaArama(aranacakBaslik, 41.0082, 28.9784);
             
             if (hamSonuclar.length > 0) {
                 let enUcuzUrun = null;
                 let enUcuzFiyat = 999999;
                 
-                // 🛠️ BİREBİR EŞLEŞME KONTROLÜ İÇİN SEPETTEKİ KELİMELER
-                const arananKelimeler = normalize(aranacakBaslik).split(' ').filter(w => w.length > 1);
+                // Harf, boşluk ve noktalama işaretlerini temizleyip tam eşleşme arıyoruz
+                const temizle = (t) => normalize(t).replace(/[^a-z0-9]/g, '');
+                const arananTemiz = temizle(aranacakBaslik);
+                const arananKelimeler = normalize(aranacakBaslik).split(' ').filter(w => w.length > 2);
 
                 hamSonuclar.forEach(item => {
-                    const gelenBaslik = normalize(item.title);
+                    const gelenTemiz = temizle(item.title);
                     
-                    // 🛠️ Sadece aranan ürünün tüm kelimelerini içeren sonuçları kabul et
-                    // (Örn: "İçim 1 Lt" aradıysak, "Pınar 200 ml"yi kabul etme)
-                    const eslesiyorMu = arananKelimeler.every(kelime => gelenBaslik.includes(kelime));
-                    if (!eslesiyorMu) return; 
+                    // 🛠️ KESİN EŞLEŞME KURALI:
+                    // Ya tamamen aynıdır, ya da aranan ürünün tüm kelimelerini (2 harften uzun) içeriyordur.
+                    const tamEslesme = (arananTemiz === gelenTemiz) || (arananKelimeler.length > 0 && arananKelimeler.every(kelime => normalize(item.title).includes(kelime)));
+                    
+                    if (!tamEslesme) return; 
 
                     const marketAdi = normalize(item.market); 
                     const resimUrl = (item.productImage || '').toLowerCase();
@@ -182,19 +160,16 @@ app.post('/api/sepet-optimize', async (req, res) => {
                     else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
                     else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
                     else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
-                    
                     if (anaMarka === "Diğer") return; 
 
                     const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
 
                     if (!marketVerisi[anaMarka]) marketVerisi[anaMarka] = {};
                     
-                    // Aynı markette aynı üründen daha ucuzu varsa onu tut
                     if (!marketVerisi[anaMarka][aranacakBaslik] || fiyatSayi < marketVerisi[anaMarka][aranacakBaslik].fiyatSayi) {
                         marketVerisi[anaMarka][aranacakBaslik] = { title: item.title, fiyatSayi, price: item.price };
                     }
 
-                    // Hibrit sepet için en ucuzu bul
                     if (fiyatSayi < enUcuzFiyat) {
                         enUcuzFiyat = fiyatSayi;
                         enUcuzUrun = { urunAdi: aranacakBaslik, market: anaMarka, title: item.title, price: item.price };
@@ -204,8 +179,6 @@ app.post('/api/sepet-optimize', async (req, res) => {
                 if (enUcuzUrun) {
                     hibritSepet.push(enUcuzUrun);
                     hibritToplam += enUcuzFiyat;
-                } else {
-                    console.log(`⚠️ Sepetteki "${aranacakBaslik}" için tam eşleşen market bulunamadı.`);
                 }
             }
         }
@@ -221,11 +194,14 @@ app.post('/api/sepet-optimize', async (req, res) => {
             let eksikUrunler = [];
 
             istenenUrunler.forEach(urun => {
-                if (marketVerisi[market][urun.baslik]) {
-                    marketToplam += marketVerisi[market][urun.baslik].fiyatSayi;
-                    bulunanUrunler.push(marketVerisi[market][urun.baslik]);
+                const baslik = typeof urun === 'string' ? urun : urun.baslik;
+                if (!baslik) return;
+
+                if (marketVerisi[market][baslik]) {
+                    marketToplam += marketVerisi[market][baslik].fiyatSayi;
+                    bulunanUrunler.push(marketVerisi[market][baslik]);
                 } else {
-                    eksikUrunler.push(urun.baslik);
+                    eksikUrunler.push(baslik);
                 }
             });
 
@@ -252,73 +228,45 @@ app.post('/api/sepet-optimize', async (req, res) => {
     }
 });
 
-// =====================================================================
-// 3. ŞEF AI TARİF MODÜLÜ (/api/tarif)
-// =====================================================================
 app.get('/api/tarif', async (req, res) => {
     try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         if (!yemekAdi || yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
-        
         const cacheKey = 'tarif:' + normalize(yemekAdi);
         const onbellek = cacheGet(cacheKey);
         if (onbellek) return res.json(onbellek);
-        
         const sonuc = await tarifBul(yemekAdi);
         if (!sonuc) return res.status(404).json({ success: false, message: 'Tarif bulunamadı.' });
-        
         const yanit = { success: true, query: yemekAdi, tarifAdi: sonuc.tarifAdi, malzemeler: sonuc.malzemeler, adimlar: sonuc.adimlar, link: sonuc.link, kaynak: sonuc.kaynak };
         cacheSet(cacheKey, yanit, 10 * 60 * 1000);
         res.json(yanit);
-    } catch (error) {
-        res.status(502).json({ success: false, message: 'Tarif siteleri şu an erişilemiyor.' });
-    }
+    } catch (error) { res.status(502).json({ success: false, message: 'Tarif siteleri şu an erişilemiyor.' }); }
 });
 
-// =====================================================================
-// 4. FİYAT TAKİP (Arka plan) (/api/fiyat-kontrol)
-// =====================================================================
 app.post('/api/fiyat-kontrol', async (req, res) => {
     try {
         const urunler = req.body.urunler || [];
         if (urunler.length === 0) return res.json({ success: true, sonuclar: [] });
-        
         const sonuclar = [];
         for (const urunAdi of urunler) {
             const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
             if (hamSonuclar && hamSonuclar.length > 0) {
                 const enIyiSonuc = hamSonuclar[0]; 
                 sonuclar.push({ arananAd: urunAdi, guncelFiyat: enIyiSonuc.price, market: enIyiSonuc.market });
-            } else {
-                sonuclar.push({ arananAd: urunAdi, guncelFiyat: null, market: null });
-            }
+            } else { sonuclar.push({ arananAd: urunAdi, guncelFiyat: null, market: null }); }
         }
         res.json({ success: true, sonuclar: sonuclar });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Sunucu hatası.' });
-    }
+    } catch (error) { res.status(500).json({ success: false, message: 'Sunucu hatası.' }); }
 });
 
-// =====================================================================
-// 5. SAĞLIK KONTROLÜ VE BAŞLATMA
-// =====================================================================
 app.get('/api/saglik', (req, res) => {
-    res.json({ 
-        success: true, 
-        uptimeSn: Math.round(process.uptime()), 
-        bellekMB: Math.round(process.memoryUsage().rss / 1048576), 
-        fiyatKaynaklari: fiyatDurum(), 
-        tarifKaynaklari: tarifDurum() 
-    });
+    res.json({ success: true, uptimeSn: Math.round(process.uptime()), bellekMB: Math.round(process.memoryUsage().rss / 1048576), fiyatKaynaklari: fiyatDurum(), tarifKaynaklari: tarifDurum() });
 });
 
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
 if (require.main === module) {
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
-        console.log(`⚡ Akıllı Sepet ve Geoapify entegrasyonu hazır.`);
-    });
+    app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`); });
 }
 
 module.exports = app;
