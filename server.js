@@ -25,7 +25,7 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
-// 🛠️ GEOAPIFY İLE KONUM BULMA
+// 🛠️ GEOAPIFY İLE KONUM BULMA (İsteğe Bağlı)
 async function geoapifyKoordinatBul(mahalle, ilce, il) {
     const apiKey = process.env.GEOAPIFY_API_KEY;
     if (!apiKey) return null;
@@ -41,13 +41,10 @@ async function geoapifyKoordinatBul(mahalle, ilce, il) {
 
         if (response.data && response.data.features && response.data.features.length > 0) {
             const props = response.data.features[0].properties;
-            return { lat: props.lat, lon: props.lon, kaynak: 'Geoapify' };
+            return { lat: props.lat, lon: props.lon };
         }
         return null;
-    } catch (error) { 
-        console.error('Geoapify Hatası:', error.message);
-        return null; 
-    }
+    } catch (error) { return null; }
 }
 
 app.get('/api/ara', async (req, res) => {
@@ -59,7 +56,7 @@ app.get('/api/ara', async (req, res) => {
 
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
 
-        let lat = 41.0082; 
+        let lat = 41.0082; // Varsayılan İstanbul
         let lon = 28.9784; 
 
         if (il || ilce || mahalle) {
@@ -67,9 +64,7 @@ app.get('/api/ara', async (req, res) => {
             if (koordinat) {
                 lat = koordinat.lat;
                 lon = koordinat.lon;
-                console.log(`📍 Konum Bulundu (${koordinat.kaynak}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
-            } else {
-                console.log(`⚠️ Konum bulunamadı, varsayılan İstanbul merkez kullanılıyor.`);
+                console.log(`📍 Konum Bulundu: ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
             }
         }
 
@@ -82,40 +77,42 @@ app.get('/api/ara', async (req, res) => {
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ AKILLI DİNAMİK FİLTRE
-        let filtrelenmisSonuclar = hamSonuclar;
-        
-        if (ilce) {
-            const temizIlce = normalize(ilce);
-            
-            // İstanbul'un genel ilçeleri (Bir marketin adında bunlardan biri geçiyorsa, o başka bir ilçededir)
-            const bilinenIlceler = ['uskudar', 'kadikoy', 'umraniye', 'atasehir', 'besiktas', 'sisli', 'fatih', 'beyoglu', 'maltepe', 'kartal', 'acibadem', 'sultanbeyli', 'pendik', 'buyukcekmece', 'silivri', 'beylikduzu', 'avcilar', 'esenyurt', 'bakirkoy', 'zeytinburnu', 'bagcilar', 'bahcelievler', 'kucukcekmece'];
+        // 🛠️ MARKA TEMİZLEYİCİ VE EN UCUZ FİYAT BULUCU
+        let markayaGoreEnUcuz = new Map();
 
-            filtrelenmisSonuclar = hamSonuclar.filter(item => {
-                const marketAdi = normalize(item.market);
-                
-                // 1. Kural: Eğer market adında senin aradığın ilçe geçiyorsa KESİN KABUL ET.
-                if (marketAdi.includes(temizIlce)) return true;
+        hamSonuclar.forEach(item => {
+            const marketAdi = normalize(item.market); 
+            let anaMarka = "Bilinmeyen Market";
 
-                // 2. Kural: Eğer Büyükçekmece arıyorsan, komşularını da kabul et.
-                if (temizIlce === 'buyukcekmece' && (marketAdi.includes('silivri') || marketAdi.includes('beylikduzu') || marketAdi.includes('avcilar') || marketAdi.includes('esenyurt'))) {
-                    return true;
-                }
+            // Gelen şube isminin içinden ana markayı bul
+            if (marketAdi.includes('migros')) anaMarka = 'Migros';
+            else if (marketAdi.includes('a101')) anaMarka = 'A101';
+            else if (marketAdi.includes('bim')) anaMarka = 'BİM';
+            else if (marketAdi.includes('sok') || marketAdi.includes('şok')) anaMarka = 'Şok';
+            else if (marketAdi.includes('carrefour')) anaMarka = 'CarrefourSA';
+            else if (marketAdi.includes('hakmar')) anaMarka = 'Hakmar';
+            else if (marketAdi.includes('tarim kredi') || marketAdi.includes('tarım kredi')) anaMarka = 'Tarım Kredi';
+            else if (marketAdi.includes('mopas') || marketAdi.includes('mopaş')) anaMarka = 'Mopaş';
+            else if (marketAdi.includes('onur')) anaMarka = 'Onur Market';
+            else {
+                anaMarka = item.market.split(' ')[0]; // Bilinmeyen markaysa ilk kelimeyi al
+            }
 
-                // 3. Kural (En Önemlisi): Market adında HİÇBİR ilçe adı geçmiyorsa (sadece "Migros" yazıyorsa) KABUL ET.
-                const baskaIlceVarMi = bilinenIlceler.some(baskaIlce => marketAdi.includes(baskaIlce));
-                if (!baskaIlceVarMi) return true;
+            // Fiyatı sayıya çevir (En ucuzu bulmak için)
+            const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
 
-                // 4. Kural: Eğer yukarıdakilerin hiçbiri değilse (örneğin başka bir ilçenin adı geçiyorsa) ÇÖPE AT.
-                return false; 
-            });
-        }
+            // Aynı markadan daha ucuzu geldiyse onu kaydet
+            if (!markayaGoreEnUcuz.has(anaMarka) || fiyatSayi < markayaGoreEnUcuz.get(anaMarka).fiyatSayi) {
+                markayaGoreEnUcuz.set(anaMarka, { ...item, market: anaMarka, fiyatSayi });
+            }
+        });
+
+        // Listedekileri fiyata göre ucuzdan pahalıya sırala
+        let filtrelenmisSonuclar = Array.from(markayaGoreEnUcuz.values());
+        filtrelenmisSonuclar.sort((a, b) => a.fiyatSayi - b.fiyatSayi);
 
         if (filtrelenmisSonuclar.length === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: `${ilce || il} bölgesinde TÜBİTAK API'sinde kayıtlı market bulunamadı.` 
-            });
+            return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
         }
 
         const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
@@ -123,7 +120,7 @@ app.get('/api/ara', async (req, res) => {
             title: item.title, 
             price: item.price, 
             unitPrice: item.unitPrice,
-            market: item.market, 
+            market: item.market, // Artık sadece ana marka (Migros, A101 vs.)
             kaynak: item.kaynak, 
             storeIcon: item.storeIcon || '🛒', 
             link: item.link,
