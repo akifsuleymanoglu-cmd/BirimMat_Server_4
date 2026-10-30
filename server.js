@@ -84,7 +84,7 @@ app.get('/api/ara', async (req, res) => {
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ ŞUBE İSMİ TEMİZLEYİCİ (Resim linkinden ve isimden marka bulur)
+        // 🛠️ ŞUBE İSMİ TEMİZLEYİCİ (Sadece ana markayı tutar)
         let filtrelenmisSonuclar = [];
 
         hamSonuclar.forEach(item => {
@@ -151,15 +151,27 @@ app.post('/api/sepet-optimize', async (req, res) => {
         let hibritSepet = [];
         let hibritToplam = 0;
 
-        for (const urunAdi of istenenUrunler) {
-            console.log(`🔎 Sepet için aranıyor: ${urunAdi}`);
-            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
+        for (const urun of istenenUrunler) {
+            const aranacakBaslik = urun.baslik;
+            console.log(`🔎 Sepet için aranıyor: ${aranacakBaslik}`);
+            
+            const hamSonuclar = await karmaArama(aranacakBaslik, 41.0082, 28.9784);
             
             if (hamSonuclar.length > 0) {
                 let enUcuzUrun = null;
                 let enUcuzFiyat = 999999;
+                
+                // 🛠️ BİREBİR EŞLEŞME KONTROLÜ İÇİN SEPETTEKİ KELİMELER
+                const arananKelimeler = normalize(aranacakBaslik).split(' ').filter(w => w.length > 1);
 
                 hamSonuclar.forEach(item => {
+                    const gelenBaslik = normalize(item.title);
+                    
+                    // 🛠️ Sadece aranan ürünün tüm kelimelerini içeren sonuçları kabul et
+                    // (Örn: "İçim 1 Lt" aradıysak, "Pınar 200 ml"yi kabul etme)
+                    const eslesiyorMu = arananKelimeler.every(kelime => gelenBaslik.includes(kelime));
+                    if (!eslesiyorMu) return; 
+
                     const marketAdi = normalize(item.market); 
                     const resimUrl = (item.productImage || '').toLowerCase();
                     const aranacakMetin = marketAdi + " " + resimUrl; 
@@ -178,23 +190,23 @@ app.post('/api/sepet-optimize', async (req, res) => {
                     if (!marketVerisi[anaMarka]) marketVerisi[anaMarka] = {};
                     
                     // Aynı markette aynı üründen daha ucuzu varsa onu tut
-                    if (!marketVerisi[anaMarka][urunAdi] || fiyatSayi < marketVerisi[anaMarka][urunAdi].fiyatSayi) {
-                        marketVerisi[anaMarka][urunAdi] = { title: item.title, fiyatSayi, price: item.price };
+                    if (!marketVerisi[anaMarka][aranacakBaslik] || fiyatSayi < marketVerisi[anaMarka][aranacakBaslik].fiyatSayi) {
+                        marketVerisi[anaMarka][aranacakBaslik] = { title: item.title, fiyatSayi, price: item.price };
                     }
 
                     // Hibrit sepet için en ucuzu bul
                     if (fiyatSayi < enUcuzFiyat) {
                         enUcuzFiyat = fiyatSayi;
-                        enUcuzUrun = { urunAdi, market: anaMarka, title: item.title, price: item.price };
+                        enUcuzUrun = { urunAdi: aranacakBaslik, market: anaMarka, title: item.title, price: item.price };
                     }
                 });
 
                 if (enUcuzUrun) {
                     hibritSepet.push(enUcuzUrun);
                     hibritToplam += enUcuzFiyat;
+                } else {
+                    console.log(`⚠️ Sepetteki "${aranacakBaslik}" için tam eşleşen market bulunamadı.`);
                 }
-            } else {
-                console.log(`⚠️ Sepetteki ürün için hiçbir markette veri bulunamadı: ${urunAdi}`);
             }
         }
 
@@ -209,11 +221,11 @@ app.post('/api/sepet-optimize', async (req, res) => {
             let eksikUrunler = [];
 
             istenenUrunler.forEach(urun => {
-                if (marketVerisi[market][urun]) {
-                    marketToplam += marketVerisi[market][urun].fiyatSayi;
-                    bulunanUrunler.push(marketVerisi[market][urun]);
+                if (marketVerisi[market][urun.baslik]) {
+                    marketToplam += marketVerisi[market][urun.baslik].fiyatSayi;
+                    bulunanUrunler.push(marketVerisi[market][urun.baslik]);
                 } else {
-                    eksikUrunler.push(urun);
+                    eksikUrunler.push(urun.baslik);
                 }
             });
 
