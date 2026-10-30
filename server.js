@@ -115,7 +115,7 @@ app.get('/api/ara', async (req, res) => {
     }
 });
 
-// 2. AKILLI SEPET (GÜVENLİ VE HATASIZ VERSİYON)
+// 2. AKILLI SEPET (DOĞRU VE KARARLI EŞLEŞTİRME)
 app.post('/api/sepet-optimize', async (req, res) => {
     try {
         const istenenUrunler = req.body.urunler || [];
@@ -135,9 +135,23 @@ app.post('/api/sepet-optimize', async (req, res) => {
                 let enUcuzUrun = null;
                 let enUcuzFiyat = 999999;
                 
+                const arananNorm = normalize(aranacakBaslik);
+                // Aramadaki boyut/hacim bilgisini yakala (örn: "1 lt", "390 gr", "1.5 kg")
+                const boyutMatch = arananNorm.match(/(\d+[\.,]?\d*)\s*(lt|l|ml|kg|g|gr)/);
+                const arananBoyut = boyutMatch ? boyutMatch[0].replace(/\s+/g, '') : null;
+
                 hamSonuclar.forEach(item => {
                     if (!item || !item.title || !item.price) return;
                     
+                    const gelenNorm = normalize(item.title);
+
+                    // Eğer aranan üründe belirli bir miktar/boyut varsa, sonuçta da o geçmeli (200ml / 1lt karışmasını önler)
+                    if (arananBoyut) {
+                        const gelenBoyutMatch = gelenNorm.match(/(\d+[\.,]?\d*)\s*(lt|l|ml|kg|g|gr)/);
+                        const gelenBoyut = gelenBoyutMatch ? gelenBoyutMatch[0].replace(/\s+/g, '') : null;
+                        if (gelenBoyut && gelenBoyut !== arananBoyut) return;
+                    }
+
                     const marketAdi = normalize(String(item.market || '')); 
                     let anaMarka = "Diğer";
                     
@@ -163,6 +177,14 @@ app.post('/api/sepet-optimize', async (req, res) => {
                         enUcuzUrun = { urunAdi: aranacakBaslik, market: anaMarka, title: item.title, price: item.price };
                     }
                 });
+
+                // Eğer tam boyut eşleşmesiyle bulunamadıysa, ilk mantıklı en ucuzu al (sepet boş kalmasın)
+                if (!enUcuzUrun && hamSonuclar.length > 0) {
+                    const yedekItem = hamSonuclar[0];
+                    const fiyatSayi = parseFloat(String(yedekItem.price).replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+                    enUcuzUrun = { urunAdi: aranacakBaslik, market: yedekItem.market, title: yedekItem.title, price: yedekItem.price };
+                    enUcuzFiyat = fiyatSayi;
+                }
 
                 if (enUcuzUrun) {
                     hibritSepet.push(enUcuzUrun);
