@@ -209,7 +209,7 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
 });
 
 // ================================================================
-// 5. SAĞLIK KONTROLÜ VE BAŞLATMA
+// 5. SAĞLIK KONTROLÜ
 // ================================================================
 app.get('/api/saglik', (req, res) => {
     res.json({
@@ -222,7 +222,7 @@ app.get('/api/saglik', (req, res) => {
 });
 
 // ================================================================
-// 6. BARKOD SORGULAMA (/api/barkod-ara) <-- SADECE BURAYA EKLENDİ
+// 6. BARKOD SORGULAMA (Barcode Report API)
 // ================================================================
 app.get('/api/barkod-ara', async (req, res) => {
     try {
@@ -232,40 +232,55 @@ app.get('/api/barkod-ara', async (req, res) => {
         }
 
         console.log(`📷 Barkod sorgulanıyor: ${barkod}`);
-        
-        // Open Food Facts API'sinden ürün adını çekiyoruz
-        const apiUrl = `https://world.openfoodfacts.org/api/v0/product/${barkod}.json`;
-        const response = await axios.get(apiUrl);
-        
-        if (response.data && response.data.status === 1) {
-            const urun = response.data.product;
-            // Türkçe ismi varsa onu, yoksa genel ismi al
-            const urunAdi = urun.product_name_tr || urun.product_name || urun.generic_name;
-            
-            if (urunAdi) {
-                return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
-            }
+
+        // Barcode Report API'sine istek at
+        const response = await axios.get('https://barcodereport.com/api/search_barcode', {
+            params: { barcode: barkod },
+            headers: {
+                'X-API-Key': '788502b1bde3694edd57e374066456cd' // Senin API Anahtarın
+            },
+            timeout: 6000
+        });
+
+        // API'den gelen yanıtı kontrol et
+        if (response.data && response.data.title) {
+            const urunAdi = response.data.title;
+            console.log(`✅ Barkod bulundu: ${urunAdi}`);
+            return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
         }
-        
-        res.status(404).json({ success: false, message: 'Bu barkoda ait ürün veritabanında bulunamadı.' });
+
+        // Ürün bulunamadıysa
+        res.status(404).json({ success: false, message: 'Bu barkod veritabanında bulunamadı.' });
 
     } catch (error) {
-        console.error('❌ Barkod API Hatası:', error.message);
-        res.status(500).json({ success: false, message: 'Barkod sorgulanırken hata oluştu.' });
+        // API hatası veya ürün bulunamadı hatası
+        const hataKodu = error.response?.data?.code || 'BILINMEYEN_HATA';
+        console.error(`❌ Barkod API Hatası (${hataKodu}):`, error.response?.data || error.message);
+
+        if (error.response?.status === 404) {
+            return res.status(404).json({ success: false, message: 'Bu barkod veritabanında bulunamadı.' });
+        }
+
+        res.status(500).json({ success: false, message: 'Barkod sorgulanırken bir hata oluştu.' });
     }
 });
 
-// 404 YAKALAYICI (Her zaman en altta kalmalı)
+// ================================================================
+// 404 YAKALAYICI (Her zaman en altta olmalı!)
+// ================================================================
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
 // Beklenmedik hatalar sunucuyu sessizce düşürmesin
 process.on('unhandledRejection', (r) => console.error('⚠️ Yakalanmamış Promise hatası:', r));
 process.on('uncaughtException', (e) => console.error('⚠️ Yakalanmamış istisna:', e));
 
+// ================================================================
+// SUNUCUYU BAŞLAT
+// ================================================================
 if (require.main === module) {
     const sunucu = app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
-        console.log('⚡ Akıllı Sepet ve Geoapify entegrasyonu hazır.');
+        console.log('⚡ Akıllı Sepet, Barcode Report ve Geoapify entegrasyonu hazır.');
     });
     sunucu.on('error', (err) => {
         console.error(err.code === 'EADDRINUSE' ? `❌ ${PORT} portu kullanımda.` : `❌ Sunucu hatası: ${err.message}`);
