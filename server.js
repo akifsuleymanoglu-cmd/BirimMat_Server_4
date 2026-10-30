@@ -56,33 +56,53 @@ app.get('/api/ara', async (req, res) => {
 
         if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
 
-        let lat = 41.0082; // Varsayılan İstanbul
+        let lat = 41.0082; 
         let lon = 28.9784; 
-
-        let distance = 50;
-        if (mahalle) distance = 15;
-        else if (ilce) distance = 20;
 
         if (il || ilce || mahalle) {
             const koordinat = await geoapifyKoordinatBul(mahalle, ilce, il);
             if (koordinat) {
                 lat = koordinat.lat;
                 lon = koordinat.lon;
-                console.log(`📍 Konum Bulundu (${koordinat.kaynak}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
+                console.log(`📍 Konum Bulundu (${koordinat.kaynagi || 'Geoapify'}): ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
             }
         }
 
-        const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3) + ':' + distance;
+        const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
         const onbellek = cacheGet(cacheKey);
         
         if (onbellek && req.query.yenile !== '1') return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
 
-        const hamSonuclar = await karmaArama(arananUrun, lat, lon, distance);
+        const hamSonuclar = await karmaArama(arananUrun, lat, lon);
         
         if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
 
-        // 🛠️ FİLTRE SİLİNDİ! TÜBİTAK'tan ne geldiyse ekrana basıyoruz.
-        const finalSonuclar = hamSonuclar.map((item, index) => ({
+        // 🛠️ KESİN FİLTRE: Sadece aradığımız ilçe ve komşularını kabul et
+        let filtrelenmisSonuclar = hamSonuclar;
+        
+        if (ilce) {
+            const temizIlce = normalize(ilce);
+            
+            filtrelenmisSonuclar = hamSonuclar.filter(item => {
+                const marketAdi = normalize(item.market);
+                
+                if (marketAdi.includes(temizIlce)) return true;
+                
+                if (temizIlce === 'buyukcekmece' && (marketAdi.includes('silivri') || marketAdi.includes('beylikduzu') || marketAdi.includes('avcilar') || marketAdi.includes('esenyurt'))) {
+                    return true;
+                }
+                return false; // Üsküdar, Kadıköy vs. direkt çöpe!
+            });
+        }
+
+        if (filtrelenmisSonuclar.length === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: `${ilce || il} bölgesinde TÜBİTAK API'sinde kayıtlı market bulunamadı.` 
+            });
+        }
+
+        const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
             id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
             market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon, link: item.link,
             isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
@@ -98,36 +118,47 @@ app.get('/api/ara', async (req, res) => {
     }
 });
 
-// Şef AI ve Fiyat Takip (Değişmedi)
+// Şef AI Tarif Modülü
 app.get('/api/tarif', async (req, res) => {
     try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         if (!yemekAdi || yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
+        
         const cacheKey = 'tarif:' + normalize(yemekAdi);
         const onbellek = cacheGet(cacheKey);
         if (onbellek) return res.json(onbellek);
+        
         const sonuc = await tarifBul(yemekAdi);
         if (!sonuc) return res.status(404).json({ success: false, message: 'Tarif bulunamadı.' });
+        
         const yanit = { success: true, query: yemekAdi, tarifAdi: sonuc.tarifAdi, malzemeler: sonuc.malzemeler, adimlar: sonuc.adimlar, link: sonuc.link, kaynak: sonuc.kaynak };
         cacheSet(cacheKey, yanit, 10 * 60 * 1000);
         res.json(yanit);
-    } catch (error) { res.status(502).json({ success: false, message: 'Tarif siteleri şu an erişilemiyor.' }); }
+    } catch (error) {
+        res.status(502).json({ success: false, message: 'Tarif siteleri şu an erişilemiyor.' });
+    }
 });
 
+// Fiyat Takip (Arka plan)
 app.post('/api/fiyat-kontrol', async (req, res) => {
     try {
         const urunler = req.body.urunler || [];
         if (urunler.length === 0) return res.json({ success: true, sonuclar: [] });
+        
         const sonuclar = [];
         for (const urunAdi of urunler) {
-            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784, 50);
+            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
             if (hamSonuclar && hamSonuclar.length > 0) {
-                const enIyiSonuc = hamSonuclar[0];
+                const enIyiSonuc = hamSonuclar[0]; 
                 sonuclar.push({ arananAd: urunAdi, guncelFiyat: enIyiSonuc.price, market: enIyiSonuc.market });
-            } else { sonuclar.push({ arananAd: urunAdi, guncelFiyat: null, market: null }); }
+            } else {
+                sonuclar.push({ arananAd: urunAdi, guncelFiyat: null, market: null });
+            }
         }
         res.json({ success: true, sonuclar: sonuclar });
-    } catch (error) { res.status(500).json({ success: false, message: 'Sunucu hatası.' }); }
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Sunucu hatası.' });
+    }
 });
 
 app.get('/api/saglik', (req, res) => {
@@ -137,7 +168,9 @@ app.get('/api/saglik', (req, res) => {
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
 if (require.main === module) {
-    app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`); });
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
+    });
 }
 
 module.exports = app;
