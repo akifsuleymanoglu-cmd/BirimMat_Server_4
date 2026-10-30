@@ -49,21 +49,19 @@ function kelimeler(metin) {
         .split(/\s+/).filter((k) => k.length > 0);
 }
 
-// DÜZELTME 1: "adet", "li", "lu" gibi paket belirteçlerini eşleştirmeden önce süzen yardımcı fonksiyon
+// "adet", "li", "lu" gibi paket belirteçlerini eşleştirmeden önce süzen yardımcı fonksiyon
 const YOKSAYILACAK_KELIMELER = new Set(['adet', 'li', 'lu', 'x', 'tane']);
 function temizKelimeler(metin) {
     return kelimeler(metin).filter(k => !YOKSAYILACAK_KELIMELER.has(k));
 }
 
 function ayniUrunMu(arananBaslik, gelenBaslik) {
-    // "15 adet" ve "15'li" eşleşmesi için temizKelimeler kullanıyoruz
     const aranan = temizKelimeler(arananBaslik);
     const gelen = temizKelimeler(gelenBaslik);
     
     if (aranan.length === 0) return false;
     const gelenSet = new Set(gelen);
     
-    // Kelimelerin tamamı eşleşiyor mu? (Örn: "tat" kelimesi "tatlı" içinde sayılmasın diye startsWith kontrolü var)
     const kelimeTamam = aranan.every((k) =>
         gelenSet.has(k) || (k.length >= 5 && gelen.some((g) => g.startsWith(k))));
     if (!kelimeTamam) return false;
@@ -78,14 +76,19 @@ function ayniUrunMu(arananBaslik, gelenBaslik) {
     return true;
 }
 
+// SADECE HAKMAR VE TARIM KREDİ EKLENDİ
 const MARKET_DESENLERI = [
     ['Migros', /migros/],
     ['A101', /a101/],
-    ['Şok', /(^|[^a-z0-9])sok([^a-z0-9]|$)|sokmarket/],
     ['BİM', /(^|[^a-z0-9])bim([^a-z0-9]|$)/],
-    ['CarrefourSA', /carrefour/]
+    ['Şok', /(^|[^a-z0-9])sok([^a-z0-9]|$)|sokmarket/],
+    ['CarrefourSA', /carrefour/],
+    ['Hakmar', /hakmar/],
+    ['Tarım Kredi', /tarim_kredi|tarim kredi/]
 ];
-const TUM_MARKETLER = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA'];
+
+// SADECE HAKMAR VE TARIM KREDİ EKLENDİ
+const TUM_MARKETLER = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA', 'Hakmar', 'Tarım Kredi'];
 
 // Önce market adına, bulunamazsa görsel adresine bakar
 function anaMarka(item) {
@@ -138,7 +141,7 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
     });
 
     const marketVerisi = {};
-    // DÜZELTME 2: Tüm marketleri en baştan başlatıyoruz ki eksik olsalar bile sepette görünsünler
+    // Tüm marketleri en baştan başlatıyoruz
     TUM_MARKETLER.forEach(m => { marketVerisi[m] = {}; });
 
     const hibritSepet = [];
@@ -163,9 +166,6 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
 
     const liste = [];
     for (const market of TUM_MARKETLER) {
-        // DÜZELTME 3: Eski koddaki "if (!marketVerisi[market]) continue;" satırını sildik. 
-        // Böylece BİM gibi eksik kalan marketler de listelenecek.
-        
         let toplam = 0;
         const bulunan = [];
         const eksik = [];
