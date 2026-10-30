@@ -222,7 +222,7 @@ app.get('/api/saglik', (req, res) => {
 });
 
 // ================================================================
-// 6. BARKOD SORGULAMA (Barcode Report API)
+// 6. BARKOD SORGULAMA (Barcode Report + Open Food Facts Çift Motorlu)
 // ================================================================
 app.get('/api/barkod-ara', async (req, res) => {
     try {
@@ -232,35 +232,51 @@ app.get('/api/barkod-ara', async (req, res) => {
         }
 
         console.log(`📷 Barkod sorgulanıyor: ${barkod}`);
+        let urunAdi = null;
+        let bulunanKaynak = null;
 
-        // Barcode Report API'sine istek at
-        const response = await axios.get('https://barcodereport.com/api/search_barcode', {
-            params: { barcode: barkod },
-            headers: {
-                'X-API-Key': '788502b1bde3694edd57e374066456cd' // Senin API Anahtarın
-            },
-            timeout: 6000
-        });
-
-        // API'den gelen yanıtı kontrol et
-        if (response.data && response.data.title) {
-            const urunAdi = response.data.title;
-            console.log(`✅ Barkod bulundu: ${urunAdi}`);
-            return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
+        // 1. MOTOR: Barcode Report API
+        try {
+            const brRes = await axios.get('https://barcodereport.com/api/search_barcode', {
+                params: { barcode: barkod },
+                headers: { 'X-API-Key': '788502b1bde3694edd57e374066456cd' },
+                timeout: 4000 // 4 saniye bekle
+            });
+            
+            if (brRes.data && brRes.data.title) {
+                urunAdi = brRes.data.title;
+                bulunanKaynak = 'Barcode Report';
+            }
+        } catch (error) {
+            console.log(`Barcode Report bulamadı veya hata verdi:`, error.message);
         }
 
-        // Ürün bulunamadıysa
-        res.status(404).json({ success: false, message: 'Bu barkod veritabanında bulunamadı.' });
+        // 2. MOTOR: Open Food Facts (Barcode Report bulamazsa buraya düşer)
+        if (!urunAdi) {
+            try {
+                const offRes = await axios.get(`https://world.openfoodfacts.org/api/v0/product/${barkod}.json`, { timeout: 4000 });
+                
+                if (offRes.data && offRes.data.status === 1) {
+                    const urun = offRes.data.product;
+                    urunAdi = urun.product_name_tr || urun.product_name || urun.generic_name;
+                    if (urunAdi) bulunanKaynak = 'Open Food Facts';
+                }
+            } catch (error) {
+                console.log(`Open Food Facts bulamadı veya hata verdi:`, error.message);
+            }
+        }
+
+        // Sonuçları Değerlendir
+        if (urunAdi) {
+            console.log(`✅ Ürün Bulundu (${bulunanKaynak}): ${urunAdi}`);
+            return res.json({ success: true, urunAdi: urunAdi, barkod: barkod, kaynak: bulunanKaynak });
+        }
+
+        // Hiçbir yerde bulunamadıysa
+        res.status(404).json({ success: false, message: 'Bu barkod hiçbir veritabanında bulunamadı.' });
 
     } catch (error) {
-        // API hatası veya ürün bulunamadı hatası
-        const hataKodu = error.response?.data?.code || 'BILINMEYEN_HATA';
-        console.error(`❌ Barkod API Hatası (${hataKodu}):`, error.response?.data || error.message);
-
-        if (error.response?.status === 404) {
-            return res.status(404).json({ success: false, message: 'Bu barkod veritabanında bulunamadı.' });
-        }
-
+        console.error('❌ Genel Barkod Hatası:', error.message);
         res.status(500).json({ success: false, message: 'Barkod sorgulanırken bir hata oluştu.' });
     }
 });
