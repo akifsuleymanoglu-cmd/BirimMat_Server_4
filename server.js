@@ -221,6 +221,41 @@ app.get('/api/saglik', (req, res) => {
     });
 });
 
+// ================================================================
+// 6. BARKOD SORGULAMA (/api/barkod-ara) <-- SADECE BURAYA EKLENDİ
+// ================================================================
+app.get('/api/barkod-ara', async (req, res) => {
+    try {
+        const barkod = String(req.query.barkod || '').trim();
+        if (barkod.length < 8) {
+            return res.status(400).json({ success: false, message: 'Geçerli bir barkod girin.' });
+        }
+
+        console.log(`📷 Barkod sorgulanıyor: ${barkod}`);
+        
+        // Open Food Facts API'sinden ürün adını çekiyoruz
+        const apiUrl = `https://world.openfoodfacts.org/api/v0/product/${barkod}.json`;
+        const response = await axios.get(apiUrl);
+        
+        if (response.data && response.data.status === 1) {
+            const urun = response.data.product;
+            // Türkçe ismi varsa onu, yoksa genel ismi al
+            const urunAdi = urun.product_name_tr || urun.product_name || urun.generic_name;
+            
+            if (urunAdi) {
+                return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
+            }
+        }
+        
+        res.status(404).json({ success: false, message: 'Bu barkoda ait ürün veritabanında bulunamadı.' });
+
+    } catch (error) {
+        console.error('❌ Barkod API Hatası:', error.message);
+        res.status(500).json({ success: false, message: 'Barkod sorgulanırken hata oluştu.' });
+    }
+});
+
+// 404 YAKALAYICI (Her zaman en altta kalmalı)
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
 // Beklenmedik hatalar sunucuyu sessizce düşürmesin
