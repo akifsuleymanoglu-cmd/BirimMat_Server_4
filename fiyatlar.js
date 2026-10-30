@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-async function marketFiyatiAra(arananUrun, lat, lon, distance = 15) {
+async function marketFiyatiAra(arananUrun, lat, lon, distance = 20) {
     try {
         console.log(`🔎 [API] Aranıyor: "${arananUrun}" (Konum: ${lat}, ${lon}, Mesafe: ${distance}km)`);
         
@@ -9,7 +9,7 @@ async function marketFiyatiAra(arananUrun, lat, lon, distance = 15) {
             latitude: lat,
             longitude: lon,
             distance: distance, 
-            size: 50
+            size: 500 // 🛠️ 50 yerine 500 yaptık! Büyükçekmece'deki marketlerin de listeye girmesi için.
         }, { timeout: 10000 });
 
         const icerik = response.data.content || [];
