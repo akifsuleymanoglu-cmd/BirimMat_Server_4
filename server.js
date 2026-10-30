@@ -1,18 +1,26 @@
+// server.js - BirimMat backend (Render). Fiyat motoru: fiyatlar.js, tarifler: tarifler.js, sepet: sepet.js
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { normalize, marketLogoBul } = require('./yardimcilar');
+const yardimcilar = require('./yardimcilar');
 const { tarifBul, durumRapor: tarifDurum } = require('./tarifler');
 const { karmaArama, durumRapor: fiyatDurum } = require('./fiyatlar');
+const { sepetiOptimizeEt, fiyatCevir, ayniUrunMu } = require('./sepet');
+
+const normalize = yardimcilar.normalize;
+// yardimcilar.js'te marketLogoBul yoksa sunucu çökmesin
+const marketLogoBul = typeof yardimcilar.marketLogoBul === 'function' ? yardimcilar.marketLogoBul : () => null;
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const ARA_CACHE_SURESI = 3 * 60 * 1000;
+const VARSAYILAN_KONUM = { lat: 41.0082, lon: 28.9784 };
 
 app.disable('x-powered-by');
 app.use(cors());
 app.use(express.json({ limit: '10kb' }));
 
+// ---------- Önbellek ----------
 const cache = new Map();
 function cacheGet(key) {
     const kayit = cache.get(key);
@@ -25,28 +33,47 @@ function cacheSet(key, veri, sure = ARA_CACHE_SURESI) {
     cache.set(key, { zaman: Date.now(), sure, veri });
 }
 
+// ---------- Geoapify ile konum ----------
 async function geoapifyKoordinatBul(mahalle, ilce, il) {
     const apiKey = process.env.GEOAPIFY_API_KEY;
     if (!apiKey) return null;
     try {
-        let adresMetni = "";
-        if (mahalle) adresMetni += `${mahalle} Mahallesi, `;
-        if (ilce) adresMetni += `${ilce}, `;
-        if (il) adresMetni += `${il}, `;
-        adresMetni += "Türkiye";
-
-        const url = `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(adresMetni)}&filter=countrycode:tr&limit=1&apiKey=${apiKey}`;
+        let adres = '';
+        if (mahalle) adres += `${mahalle} Mahallesi, `;
+        if (ilce) adres += `${ilce}, `;
+        if (il) adres += `${il}, `;
+        adres += 'Türkiye';
+        const url = `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(adres)}&filter=countrycode:tr&limit=1&apiKey=${apiKey}`;
         const response = await axios.get(url, { timeout: 6000 });
-
-        if (response.data && response.data.features && response.data.features.length > 0) {
-            const props = response.data.features[0].properties;
-            return { lat: props.lat, lon: props.lon };
-        }
+        const f = response.data && response.data.features;
+        if (f && f.length > 0) return { lat: f[0].properties.lat, lon: f[0].properties.lon };
         return null;
-    } catch (error) { return null; }
+    } catch (error) {
+        console.error('Geoapify Hatası:', error.message);
+        return null;
+    }
 }
 
-// 1. MARKET ARAMA VE MARKA TEMİZLEME
+// Şube adından / görsel adresinden ana markayı bulur
+function anaMarkaBul(item) {
+    const market = normalize(String(item.market || ''));
+    const resim = String(item.productImage || '').toLowerCase();
+    const metin = market + ' ' + resim;
+    if (metin.includes('migros')) return 'Migros';
+    if (metin.includes('a101')) return 'A101';
+    if (metin.includes('bim')) return 'BİM';
+    if (metin.includes('sok') || metin.includes('şok')) return 'Şok';
+    if (metin.includes('carrefour')) return 'CarrefourSA';
+    if (metin.includes('hakmar')) return 'Hakmar';
+    if (metin.includes('tarim_kredi') || metin.includes('tarım kredi')) return 'Tarım Kredi';
+    if (metin.includes('mopas') || metin.includes('mopaş')) return 'Mopaş';
+    if (metin.includes('onur')) return 'Onur Market';
+    return String(item.market || '').trim() || 'Diğer Market';
+}
+
+// ================================================================
+// 1. MARKET ARAMA (/api/ara)
+// ================================================================
 app.get('/api/ara', async (req, res) => {
     try {
         const arananUrun = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
@@ -54,53 +81,50 @@ app.get('/api/ara', async (req, res) => {
         const ilce = String(req.query.ilce || '').trim();
         const mahalle = String(req.query.mahalle || '').trim();
 
-        if (!arananUrun || arananUrun.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
+        if (arananUrun.length < 2) {
+            return res.status(400).json({ success: false, message: 'Geçerli bir ürün adı girin.' });
+        }
 
-        let lat = 41.0082; 
-        let lon = 28.9784; 
-
+        let { lat, lon } = VARSAYILAN_KONUM;
         if (il || ilce || mahalle) {
             const koordinat = await geoapifyKoordinatBul(mahalle, ilce, il);
-            if (koordinat) { lat = koordinat.lat; lon = koordinat.lon; }
+            if (koordinat) {
+                lat = koordinat.lat;
+                lon = koordinat.lon;
+                console.log(`📍 Konum Bulundu: ${mahalle} ${ilce} ${il} -> (${lat}, ${lon})`);
+            }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
         const onbellek = cacheGet(cacheKey);
-        if (onbellek && req.query.yenile !== '1') return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
+        if (onbellek && req.query.yenile !== '1') {
+            return res.json({ success: true, query: arananUrun, cached: true, results: onbellek });
+        }
 
-        const hamSonuclar = await karmaArama(arananUrun, lat, lon);
-        if (hamSonuclar.length === 0) return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
+        const hamSonuclar = (await karmaArama(arananUrun, lat, lon)) || [];
+        if (hamSonuclar.length === 0) {
+            return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
+        }
 
-        let filtrelenmisSonuclar = [];
-        hamSonuclar.forEach(item => {
-            const marketAdi = normalize(item.market); 
-            const resimUrl = (item.productImage || '').toLowerCase();
-            const aranacakMetin = marketAdi + " " + resimUrl; 
+        // Ana markayı bul, fiyatı doğru oku
+        let sonuclar = hamSonuclar.map((item) => ({
+            ...item,
+            market: anaMarkaBul(item),
+            fiyatSayi: fiyatCevir(item.price)   // eski kod noktayı siliyordu: 57.5 -> 575
+        }));
 
-            let anaMarka = "Diğer Market";
-            if (aranacakMetin.includes('migros')) anaMarka = 'Migros';
-            else if (aranacakMetin.includes('a101')) anaMarka = 'A101';
-            else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
-            else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
-            else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
-            else if (aranacakMetin.includes('hakmar')) anaMarka = 'Hakmar';
-            else anaMarka = item.market.trim(); 
-
-            const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
-            filtrelenmisSonuclar.push({ ...item, market: anaMarka, fiyatSayi });
-        });
-
+        // Aynı market + ürün + fiyat tekrarlarını temizle
         const gorulenler = new Set();
-        filtrelenmisSonuclar = filtrelenmisSonuclar.filter(item => {
-            const kilit = normalize(item.market) + "|" + normalize(item.title) + "|" + item.price;
+        sonuclar = sonuclar.filter((item) => {
+            const kilit = normalize(item.market) + '|' + normalize(String(item.title || '')) + '|' + item.price;
             if (gorulenler.has(kilit)) return false;
             gorulenler.add(kilit);
             return true;
         });
 
-        filtrelenmisSonuclar.sort((a, b) => a.fiyatSayi - b.fiyatSayi);
+        sonuclar.sort((a, b) => a.fiyatSayi - b.fiyatSayi);
 
-        const finalSonuclar = filtrelenmisSonuclar.map((item, index) => ({
+        const finalSonuclar = sonuclar.map((item, index) => ({
             id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
             market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon || '🛒', link: item.link,
             isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
@@ -111,172 +135,107 @@ app.get('/api/ara', async (req, res) => {
         cacheSet(cacheKey, finalSonuclar);
         res.json({ success: true, query: arananUrun, results: finalSonuclar });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Sunucu hatası oluştu.' });
+        console.error('❌ /api/ara hatası:', error);
+        res.status(500).json({ success: false, message: 'Sunucu hatası oluştu.', detay: error.message });
     }
 });
 
-// 2. AKILLI SEPET (DOĞRU VE KARARLI EŞLEŞTİRME)
+// ================================================================
+// 2. AKILLI SEPET (/api/sepet-optimize)  -> mantık sepet.js içinde
+// ================================================================
 app.post('/api/sepet-optimize', async (req, res) => {
     try {
-        const istenenUrunler = req.body.urunler || [];
-        if (istenenUrunler.length === 0) return res.status(400).json({ success: false, message: 'Sepet boş.' });
-
-        let marketVerisi = {}; 
-        let hibritSepet = [];
-        let hibritToplam = 0;
-
-        for (const urunObj of istenenUrunler) {
-            const aranacakBaslik = typeof urunObj === 'string' ? urunObj : (urunObj && urunObj.baslik ? urunObj.baslik : '');
-            if (!aranacakBaslik) continue;
-
-            const hamSonuclar = await karmaArama(aranacakBaslik, 41.0082, 28.9784);
-            
-            if (hamSonuclar && hamSonuclar.length > 0) {
-                let enUcuzUrun = null;
-                let enUcuzFiyat = 999999;
-                
-                const arananNorm = normalize(aranacakBaslik);
-                // Aramadaki boyut/hacim bilgisini yakala (örn: "1 lt", "390 gr", "1.5 kg")
-                const boyutMatch = arananNorm.match(/(\d+[\.,]?\d*)\s*(lt|l|ml|kg|g|gr)/);
-                const arananBoyut = boyutMatch ? boyutMatch[0].replace(/\s+/g, '') : null;
-
-                hamSonuclar.forEach(item => {
-                    if (!item || !item.title || !item.price) return;
-                    
-                    const gelenNorm = normalize(item.title);
-
-                    // Eğer aranan üründe belirli bir miktar/boyut varsa, sonuçta da o geçmeli (200ml / 1lt karışmasını önler)
-                    if (arananBoyut) {
-                        const gelenBoyutMatch = gelenNorm.match(/(\d+[\.,]?\d*)\s*(lt|l|ml|kg|g|gr)/);
-                        const gelenBoyut = gelenBoyutMatch ? gelenBoyutMatch[0].replace(/\s+/g, '') : null;
-                        if (gelenBoyut && gelenBoyut !== arananBoyut) return;
-                    }
-
-                    const marketAdi = normalize(String(item.market || '')); 
-                    let anaMarka = "Diğer";
-                    
-                    const aranacakMetin = marketAdi + " " + String(item.productImage || '').toLowerCase();
-                    if (aranacakMetin.includes('migros')) anaMarka = 'Migros';
-                    else if (aranacakMetin.includes('a101')) anaMarka = 'A101';
-                    else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
-                    else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
-                    else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
-                    
-                    if (anaMarka === "Diğer") return; 
-
-                    const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
-
-                    if (!marketVerisi[anaMarka]) marketVerisi[anaMarka] = {};
-                    
-                    if (!marketVerisi[anaMarka][aranacakBaslik] || fiyatSayi < marketVerisi[anaMarka][aranacakBaslik].fiyatSayi) {
-                        marketVerisi[anaMarka][aranacakBaslik] = { title: item.title, fiyatSayi, price: item.price };
-                    }
-
-                    if (fiyatSayi < enUcuzFiyat) {
-                        enUcuzFiyat = fiyatSayi;
-                        enUcuzUrun = { urunAdi: aranacakBaslik, market: anaMarka, title: item.title, price: item.price };
-                    }
-                });
-
-                // Eğer tam boyut eşleşmesiyle bulunamadıysa, ilk mantıklı en ucuzu al (sepet boş kalmasın)
-                if (!enUcuzUrun && hamSonuclar.length > 0) {
-                    const yedekItem = hamSonuclar[0];
-                    const fiyatSayi = parseFloat(String(yedekItem.price).replace(/[^\d,]/g, '').replace(',', '.')) || 0;
-                    enUcuzUrun = { urunAdi: aranacakBaslik, market: yedekItem.market, title: yedekItem.title, price: yedekItem.price };
-                    enUcuzFiyat = fiyatSayi;
-                }
-
-                if (enUcuzUrun) {
-                    hibritSepet.push(enUcuzUrun);
-                    hibritToplam += enUcuzFiyat;
-                }
-            }
-        }
-
-        let tekMarketListesi = [];
-        const tumMarketler = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA'];
-
-        tumMarketler.forEach(market => {
-            if (!marketVerisi[market]) return;
-
-            let marketToplam = 0;
-            let bulunanUrunler = [];
-            let eksikUrunler = [];
-
-            istenenUrunler.forEach(urun => {
-                const baslik = typeof urun === 'string' ? urun : (urun && urun.baslik ? urun.baslik : '');
-                if (!baslik) return;
-
-                if (marketVerisi[market][baslik]) {
-                    marketToplam += marketVerisi[market][baslik].fiyatSayi;
-                    bulunanUrunler.push(marketVerisi[market][baslik]);
-                } else {
-                    eksikUrunler.push(baslik);
-                }
-            });
-
-            tekMarketListesi.push({
-                market: market,
-                toplam: marketToplam.toFixed(2) + " TL",
-                toplamSayi: marketToplam,
-                bulunanUrunler: bulunanUrunler,
-                eksikUrunler: eksikUrunler
-            });
-        });
-
-        tekMarketListesi.sort((a, b) => a.toplamSayi - b.toplamSayi);
-
-        res.json({
-            success: true,
-            hibrit: { sepet: hibritSepet, toplam: hibritToplam.toFixed(2) + " TL" },
-            tekMarketListesi: tekMarketListesi
-        });
-
+        const istenen = Array.isArray(req.body.urunler) ? req.body.urunler.slice(0, 30) : [];
+        if (istenen.length === 0) return res.status(400).json({ success: false, message: 'Sepet boş.' });
+        res.json(await sepetiOptimizeEt(istenen, karmaArama));
     } catch (error) {
-        console.error('Sepet Optimizasyon Kritik Hata:', error);
-        res.status(500).json({ success: false, message: 'Sunucu optimizasyon hatası: ' + error.message });
+        console.error('❌ Sepet hatası:', error);
+        res.status(500).json({ success: false, message: 'Sepet hesaplanırken hata oluştu.', detay: error.message });
     }
 });
 
+// ================================================================
+// 3. ŞEF TARİF MODÜLÜ (/api/tarif)
+// ================================================================
 app.get('/api/tarif', async (req, res) => {
     try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
-        if (!yemekAdi || yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
+        if (yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
+
         const cacheKey = 'tarif:' + normalize(yemekAdi);
         const onbellek = cacheGet(cacheKey);
         if (onbellek) return res.json(onbellek);
+
         const sonuc = await tarifBul(yemekAdi);
         if (!sonuc) return res.status(404).json({ success: false, message: 'Tarif bulunamadı.' });
-        const yanit = { success: true, query: yemekAdi, tarifAdi: sonuc.tarifAdi, malzemeler: sonuc.malzemeler, adimlar: sonuc.adimlar, link: sonuc.link, kaynak: sonuc.kaynak };
+
+        const yanit = {
+            success: true, query: yemekAdi, tarifAdi: sonuc.tarifAdi, malzemeler: sonuc.malzemeler,
+            adimlar: sonuc.adimlar, link: sonuc.link, kaynak: sonuc.kaynak
+        };
         cacheSet(cacheKey, yanit, 10 * 60 * 1000);
         res.json(yanit);
-    } catch (error) { res.status(502).json({ success: false, message: 'Tarif siteleri şu an erişilemiyor.' }); }
+    } catch (error) {
+        console.error('❌ /api/tarif hatası:', error.message);
+        res.status(502).json({ success: false, message: 'Tarif siteleri şu an erişilemiyor.' });
+    }
 });
 
+// ================================================================
+// 4. FİYAT TAKİP (/api/fiyat-kontrol)
+// ================================================================
 app.post('/api/fiyat-kontrol', async (req, res) => {
     try {
-        const urunler = req.body.urunler || [];
-        if (urunler.length === 0) return res.json({ success: true, sonuclar: [] });
+        const urunler = Array.isArray(req.body.urunler) ? req.body.urunler.slice(0, 30) : [];
         const sonuclar = [];
         for (const urunAdi of urunler) {
-            const hamSonuclar = await karmaArama(urunAdi, 41.0082, 28.9784);
-            if (hamSonuclar && hamSonuclar.length > 0) {
-                const enIyiSonuc = hamSonuclar[0]; 
-                sonuclar.push({ arananAd: urunAdi, guncelFiyat: enIyiSonuc.price, market: enIyiSonuc.market });
-            } else { sonuclar.push({ arananAd: urunAdi, guncelFiyat: null, market: null }); }
+            let ham = [];
+            try { ham = (await karmaArama(urunAdi, VARSAYILAN_KONUM.lat, VARSAYILAN_KONUM.lon)) || []; }
+            catch (e) { console.error(`❌ Fiyat kontrol (${urunAdi}):`, e.message); }
+            // Önce aynı ürün olan (marka + miktar tutan) sonuçların en ucuzunu al; yoksa ilk sonucu kullan
+            const ayni = ham.filter((x) => x && ayniUrunMu(urunAdi, x.title));
+            const iyi = ayni.length > 0
+                ? ayni.reduce((a, b) => (fiyatCevir(b.price) < fiyatCevir(a.price) ? b : a))
+                : ham[0];
+            sonuclar.push(iyi
+                ? { arananAd: urunAdi, guncelFiyat: iyi.price, market: iyi.market }
+                : { arananAd: urunAdi, guncelFiyat: null, market: null });
         }
-        res.json({ success: true, sonuclar: sonuclar });
-    } catch (error) { res.status(500).json({ success: false, message: 'Sunucu hatası.' }); }
+        res.json({ success: true, sonuclar });
+    } catch (error) {
+        console.error('❌ /api/fiyat-kontrol hatası:', error);
+        res.status(500).json({ success: false, message: 'Sunucu hatası.' });
+    }
 });
 
+// ================================================================
+// 5. SAĞLIK KONTROLÜ VE BAŞLATMA
+// ================================================================
 app.get('/api/saglik', (req, res) => {
-    res.json({ success: true, uptimeSn: Math.round(process.uptime()), bellekMB: Math.round(process.memoryUsage().rss / 1048576), fiyatKaynaklari: fiyatDurum(), tarifKaynaklari: tarifDurum() });
+    res.json({
+        success: true,
+        uptimeSn: Math.round(process.uptime()),
+        bellekMB: Math.round(process.memoryUsage().rss / 1048576),
+        fiyatKaynaklari: fiyatDurum(),
+        tarifKaynaklari: tarifDurum()
+    });
 });
 
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
+// Beklenmedik hatalar sunucuyu sessizce düşürmesin
+process.on('unhandledRejection', (r) => console.error('⚠️ Yakalanmamış Promise hatası:', r));
+process.on('uncaughtException', (e) => console.error('⚠️ Yakalanmamış istisna:', e));
+
 if (require.main === module) {
-    app.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`); });
+    const sunucu = app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
+        console.log('⚡ Akıllı Sepet ve Geoapify entegrasyonu hazır.');
+    });
+    sunucu.on('error', (err) => {
+        console.error(err.code === 'EADDRINUSE' ? `❌ ${PORT} portu kullanımda.` : `❌ Sunucu hatası: ${err.message}`);
+        process.exit(1);
+    });
 }
 
 module.exports = app;
