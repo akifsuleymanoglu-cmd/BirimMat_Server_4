@@ -71,6 +71,22 @@ function anaMarkaBul(item) {
     return String(item.market || '').trim() || 'Diğer Market';
 }
 
+// ---------- Otomatik Türkçe Çeviri (YENİ) ----------
+async function metniTurkceyeCevir(metin) {
+    try {
+        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=tr&dt=t&q=${encodeURIComponent(metin)}`;
+        const response = await axios.get(url, { timeout: 4000 });
+        
+        if (response.data && response.data[0] && response.data[0][0] && response.data[0][0][0]) {
+            return response.data[0][0][0];
+        }
+        return metin;
+    } catch (error) {
+        console.error('Çeviri hatası:', error.message);
+        return metin; // Hata olursa orijinal metni döndür
+    }
+}
+
 // ================================================================
 // 1. MARKET ARAMA (/api/ara)
 // ================================================================
@@ -106,14 +122,12 @@ app.get('/api/ara', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Eşleşen fiyat bulunamadı.' });
         }
 
-        // Ana markayı bul, fiyatı doğru oku
         let sonuclar = hamSonuclar.map((item) => ({
             ...item,
             market: anaMarkaBul(item),
-            fiyatSayi: fiyatCevir(item.price)   // eski kod noktayı siliyordu: 57.5 -> 575
+            fiyatSayi: fiyatCevir(item.price)
         }));
 
-        // Aynı market + ürün + fiyat tekrarlarını temizle
         const gorulenler = new Set();
         sonuclar = sonuclar.filter((item) => {
             const kilit = normalize(item.market) + '|' + normalize(String(item.title || '')) + '|' + item.price;
@@ -141,7 +155,7 @@ app.get('/api/ara', async (req, res) => {
 });
 
 // ================================================================
-// 2. AKILLI SEPET (/api/sepet-optimize)  -> mantık sepet.js içinde
+// 2. AKILLI SEPET (/api/sepet-optimize)
 // ================================================================
 app.post('/api/sepet-optimize', async (req, res) => {
     try {
@@ -192,7 +206,6 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
             let ham = [];
             try { ham = (await karmaArama(urunAdi, VARSAYILAN_KONUM.lat, VARSAYILAN_KONUM.lon)) || []; }
             catch (e) { console.error(`❌ Fiyat kontrol (${urunAdi}):`, e.message); }
-            // Önce aynı ürün olan (marka + miktar tutan) sonuçların en ucuzunu al; yoksa ilk sonucu kullan
             const ayni = ham.filter((x) => x && ayniUrunMu(urunAdi, x.title));
             const iyi = ayni.length > 0
                 ? ayni.reduce((a, b) => (fiyatCevir(b.price) < fiyatCevir(a.price) ? b : a))
@@ -222,7 +235,7 @@ app.get('/api/saglik', (req, res) => {
 });
 
 // ================================================================
-// 6. BARKOD SORGULAMA (Barcode Report API)
+// 6. BARKOD SORGULAMA (Barcode Report API + Çeviri)
 // ================================================================
 app.get('/api/barkod-ara', async (req, res) => {
     try {
@@ -233,27 +246,28 @@ app.get('/api/barkod-ara', async (req, res) => {
 
         console.log(`📷 Barkod sorgulanıyor: ${barkod}`);
 
-        // Barcode Report API'sine istek at
         const response = await axios.get('https://barcodereport.com/api/search_barcode', {
             params: { barcode: barkod },
             headers: {
-                'X-API-Key': '788502b1bde3694edd57e374066456cd' // Senin API Anahtarın
+                'X-API-Key': '788502b1bde3694edd57e374066456cd'
             },
             timeout: 6000
         });
 
-        // API'den gelen yanıtı kontrol et
         if (response.data && response.data.title) {
-            const urunAdi = response.data.title;
-            console.log(`✅ Barkod bulundu: ${urunAdi}`);
+            let urunAdi = response.data.title;
+            console.log(`🌍 Bulunan Orijinal Ürün Adı: ${urunAdi}`);
+            
+            // Otomatik Türkçe Çeviri
+            urunAdi = await metniTurkceyeCevir(urunAdi);
+            console.log(`🇹🇷 Türkçeye Çevrilen Ürün Adı: ${urunAdi}`);
+
             return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
         }
 
-        // Ürün bulunamadıysa
         res.status(404).json({ success: false, message: 'Bu barkod veritabanında bulunamadı.' });
 
     } catch (error) {
-        // API hatası veya ürün bulunamadı hatası
         const hataKodu = error.response?.data?.code || 'BILINMEYEN_HATA';
         console.error(`❌ Barkod API Hatası (${hataKodu}):`, error.response?.data || error.message);
 
@@ -266,7 +280,7 @@ app.get('/api/barkod-ara', async (req, res) => {
 });
 
 // ================================================================
-// 404 YAKALAYICI (Her zaman en altta olmalı!)
+// 404 YAKALAYICI (Her zaman en altta olmalı)
 // ================================================================
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
@@ -280,7 +294,7 @@ process.on('uncaughtException', (e) => console.error('⚠️ Yakalanmamış isti
 if (require.main === module) {
     const sunucu = app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
-        console.log('⚡ Akıllı Sepet, Barcode Report ve Geoapify entegrasyonu hazır.');
+        console.log('⚡ Akıllı Sepet, Çeviri ve Barcode Report entegrasyonu hazır.');
     });
     sunucu.on('error', (err) => {
         console.error(err.code === 'EADDRINUSE' ? `❌ ${PORT} portu kullanımda.` : `❌ Sunucu hatası: ${err.message}`);
