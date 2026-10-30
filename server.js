@@ -203,6 +203,103 @@ app.post('/api/sepet-optimize', async (req, res) => {
                 } else {
                     eksikUrunler.push(baslik);
                 }
+// 2. AKILLI SEPET (BOYUT VE HACİM KORUMALI EŞLEŞTİRME)
+app.post('/api/sepet-optimize', async (req, res) => {
+    try {
+        const istenenUrunler = req.body.urunler || [];
+        if (istenenUrunler.length === 0) return res.status(400).json({ success: false, message: 'Sepet boş.' });
+
+        let marketVerisi = {}; 
+        let hibritSepet = [];
+        let hibritToplam = 0;
+
+        // Metin içinden gramaj/hacim birimini yakalamak için yardımcı fonksiyon (Örn: "1 lt", "500 gr", "390 gr")
+        const birimBulici = (metin) => {
+            const m = metin.toLowerCase().match(/(\d+)\s*(g|gr|gram|kg|kilogram|ml|l|lt|litre)/);
+            return m ? m[0].replace(/\s+/g, '') : null;
+        };
+
+        for (const urunObj of istenenUrunler) {
+            const aranacakBaslik = typeof urunObj === 'string' ? urunObj : urunObj.baslik;
+            if (!aranacakBaslik) continue;
+
+            const hamSonuclar = await karmaArama(aranacakBaslik, 41.0082, 28.9784);
+            
+            if (hamSonuclar.length > 0) {
+                let enUcuzUrun = null;
+                let enUcuzFiyat = 999999;
+                
+                const arananBirim = birimBulici(aranacakBaslik);
+                const arananKelimeler = normalize(aranacakBaslik).split(' ').filter(w => w.length > 2);
+
+                hamSonuclar.forEach(item => {
+                    const gelenBaslikNorm = normalize(item.title);
+                    const gelenBirim = birimBulici(item.title);
+
+                    // 🛠️ HASSAS EŞLEŞTİRME KURALI:
+                    // 1. Eğer aranan üründe spesifik bir miktar (örn: 1lt, 390gr) varsa, 
+                    // taranan sonuçta da bu miktar geçmeli veya birimler uyuşmalı.
+                    if (arananBirim && gelenBirim && arananBirim !== gelenBirim) {
+                        return; // Boyutlar uyuşmuyorsa (örn: 1 Lt vs 200 ml) kesinlikle atla!
+                    }
+
+                    // 2. En azından ana kelimelerden biri (marka veya ürün cinsi) eşleşmeli
+                    const kelimeEslesti = arananKelimeler.some(kelime => gelenBaslikNorm.includes(kelime));
+                    if (!kelimeEslesti) return;
+
+                    const marketAdi = normalize(item.market); 
+                    const resimUrl = (item.productImage || '').toLowerCase();
+                    const aranacakMetin = marketAdi + " " + resimUrl; 
+                    
+                    let anaMarka = "Diğer";
+                    if (aranacakMetin.includes('migros')) anaMarka = 'Migros';
+                    else if (aranacakMetin.includes('a101')) anaMarka = 'A101';
+                    else if (aranacakMetin.includes('bim')) anaMarka = 'BİM';
+                    else if (aranacakMetin.includes('sok') || aranacakMetin.includes('şok')) anaMarka = 'Şok';
+                    else if (aranacakMetin.includes('carrefour')) anaMarka = 'CarrefourSA';
+                    if (anaMarka === "Diğer") return; 
+
+                    const fiyatSayi = parseFloat(String(item.price).replace(/[^\d,]/g, '').replace(',', '.')) || 999999;
+
+                    if (!marketVerisi[anaMarka]) marketVerisi[anaMarka] = {};
+                    
+                    if (!marketVerisi[anaMarka][aranacakBaslik] || fiyatSayi < marketVerisi[anaMarka][aranacakBaslik].fiyatSayi) {
+                        marketVerisi[anaMarka][aranacakBaslik] = { title: item.title, fiyatSayi, price: item.price };
+                    }
+
+                    if (fiyatSayi < enUcuzFiyat) {
+                        enUcuzFiyat = fiyatSayi;
+                        enUcuzUrun = { urunAdi: aranacakBaslik, market: anaMarka, title: item.title, price: item.price };
+                    }
+                });
+
+                if (enUcuzUrun) {
+                    hibritSepet.push(enUcuzUrun);
+                    hibritToplam += enUcuzFiyat;
+                }
+            }
+        }
+
+        let tekMarketListesi = [];
+        const tumMarketler = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA'];
+
+        tumMarketler.forEach(market => {
+            if (!marketVerisi[market]) return;
+
+            let marketToplam = 0;
+            let bulunanUrunler = [];
+            let eksikUrunler = [];
+
+            istenenUrunler.forEach(urun => {
+                const baslik = typeof urun === 'string' ? urun : urun.baslik;
+                if (!baslik) return;
+
+                if (marketVerisi[market][baslik]) {
+                    marketToplam += marketVerisi[market][baslik].fiyatSayi;
+                    bulunanUrunler.push(marketVerisi[market][baslik]);
+                } else {
+                    eksikUrunler.push(baslik);
+                }
             });
 
             tekMarketListesi.push({
@@ -227,9 +324,7 @@ app.post('/api/sepet-optimize', async (req, res) => {
         res.status(500).json({ success: false, message: 'Sepet hesaplanırken hata oluştu.' });
     }
 });
-
-app.get('/api/tarif', async (req, res) => {
-    try {
+                try {
         const yemekAdi = String(req.query.q || '').trim().replace(/\s+/g, ' ').slice(0, 100);
         if (!yemekAdi || yemekAdi.length < 2) return res.status(400).json({ success: false, message: 'Geçerli bir yemek adı girin.' });
         const cacheKey = 'tarif:' + normalize(yemekAdi);
@@ -270,3 +365,5 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+                             
