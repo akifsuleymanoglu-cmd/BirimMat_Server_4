@@ -47,6 +47,25 @@ const ISLENMIS = new Set(['ketcap', 'sos', 'sosu', 'corba', 'konserve', 'konserv
     'cikolata', 'biskuvi', 'gofret', 'icecek', 'nektar', 'suyu', 'kremasi', 'tohumu']);
 const CESIT = new Set(['mor', 'kirmizi', 'yesil', 'sivri', 'dolmalik', 'cherry', 'cheri', 'ceri', 'kapya', 'arpacik']);
 
+// 🚀 YENİ: Hem market adına hem de görsel URL'sine bakarak marketi bulur
+function temizMarketAdiBul(item) {
+    const market = norm(item.market || '');
+    const resim = String(item.productImage || '').toLowerCase();
+    const metin = market + ' ' + resim;
+
+    if (metin.includes('a101')) return 'A101';
+    if (metin.includes('migros')) return 'Migros';
+    if (metin.includes('bim')) return 'BİM';
+    if (metin.includes('şok') || metin.includes('sok')) return 'Şok';
+    if (metin.includes('carrefour')) return 'CarrefourSA';
+    if (metin.includes('hakmar')) return 'Hakmar';
+    if (metin.includes('tarim') || metin.includes('tarım')) return 'Tarım Kredi';
+    if (metin.includes('mopas') || metin.includes('mopaş')) return 'Mopaş';
+    if (metin.includes('file')) return 'File Market';
+
+    return null; // Listede yoksa null döner
+}
+
 function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
     const sorgu = kelimeler(arananMetin);
     if (sorgu.length === 0) return { urun: null, neden: 'Boş arama' };
@@ -67,11 +86,15 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         
         const ret = (neden) => elenenler.push(`${item.title} (${neden})`);
 
-        // 🚀 YEREL ESNAF FİLTRESİ (server.js'den temizlenmiş olarak geliyor)
-        if (item.market === 'Yerel Esnaf') {
-            ret('zincir market değil'); 
+        // 🚀 MARKET TEMİZLEYİCİ (Hem isme hem resme bakar)
+        const temizMarket = temizMarketAdiBul(item);
+        
+        if (!temizMarket) {
+            ret('yerel esnaf veya bilinmeyen market'); 
             continue; 
         }
+        
+        item.market = temizMarket; // İsmi "A101", "File Market" olarak sabitledik
 
         if (!sorgu.every((k) => gelenSet.has(k))) { ret('kelime tutmuyor'); continue; }
         const islenmis = gelen.find((k) => ISLENMIS.has(k) && !sorguSet.has(k));
