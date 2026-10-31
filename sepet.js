@@ -1,5 +1,4 @@
-// sepet.js - Akıllı sepet: doğru fiyat okuma + doğru ürün eşleştirme
-// Bağımsızdır (başka dosyaya ihtiyaç duymaz).
+// sepet.js - Akıllı Sepet, Doğru Fiyat Okuma ve Kusursuz Ürün Eşleştirme Motoru
 
 // Türkçe karakterleri sadeleştirip küçük harfe çevirir
 function norm(t) {
@@ -49,34 +48,56 @@ function kelimeler(metin) {
         .split(/\s+/).filter((k) => k.length > 0);
 }
 
-// "adet", "li", "lu" gibi paket belirteçlerini eşleştirmeden önce süzen yardımcı fonksiyon
-const YOKSAYILACAK_KELIMELER = new Set(['adet', 'li', 'lu', 'x', 'tane']);
+// "adet", "boy", "kuru" gibi eşleşmeyi bozan ama ürünün aslı olmayan kelimeler
+const YOKSAYILACAK_KELIMELER = new Set(['adet', 'li', 'lu', 'x', 'tane', 'kek', 'bisküvi', 'gram', 'gr', 'boy', 'kuru', 'taze', 'büyük', 'küçük', 'orta']);
 function temizKelimeler(metin) {
     return kelimeler(metin).filter(k => !YOKSAYILACAK_KELIMELER.has(k));
 }
 
+// Kusursuz Ürün Eşleştirme (Yasaklı Kelimeler ve Gramaj Kontrolü ile)
 function ayniUrunMu(arananBaslik, gelenBaslik) {
+    const arananLower = norm(arananBaslik);
+    const gelenLower = norm(gelenBaslik);
+    
+    // 🚀 YENİ: Yasaklı Kelime Kontrolü (Zeytin/Biber karışmasını önler)
+    const yasakliKelimeler = ['zeytin', 'salça', 'çikolata', 'krem', 'şampuan', 'çay', 'kahve', 'deterjan', 'bisküvi', 'kraker', 'köfte', 'sucuk'];
+    
+    for (let kelime of yasakliKelimeler) {
+        if (!arananLower.includes(kelime) && gelenLower.includes(kelime)) {
+            return false; // Aranan üründe yok ama markettekinde varsa reddet!
+        }
+    }
+
     const aranan = temizKelimeler(arananBaslik);
     const gelen = temizKelimeler(gelenBaslik);
     
     if (aranan.length === 0) return false;
     const gelenSet = new Set(gelen);
     
+    // 1. Kelime Eşleşmesi (Tüm kelimeler bulunmalı)
     const kelimeTamam = aranan.every((k) =>
         gelenSet.has(k) || (k.length >= 5 && gelen.some((g) => g.startsWith(k))));
     if (!kelimeTamam) return false;
 
+    // 2. MİKTAR (Hacim/Ağırlık) KONTROLÜ
     const ab = boyutBul(arananBaslik);
-    if (ab) {
-        const gb = boyutBul(gelenBaslik);
-        if (!gb || gb.tur !== ab.tur) return false;
-        if (Math.abs(gb.deger - ab.deger) > ab.deger * 0.005) return false;
+    const gb = boyutBul(gelenBaslik);
+
+    if (ab && gb) {
+        if (gb.tur !== ab.tur) return false; // Biri ağırlık biri hacimse reddet
+        // Miktarlar arasında çok uçuk bir fark varsa reddet (Örn: 400 ml isteniyorsa 5 L gelmesin)
+        if (gb.deger < (ab.deger * 0.5) || gb.deger > (ab.deger * 3)) return false;
+    } else if (ab && !gb) {
+        return false; // Aranan üründe miktar var ama gelen üründe yoksa reddet
     }
+
+    // 3. Toplu Paket Kontrolü
     if (topluPaketMi(arananBaslik) !== topluPaketMi(gelenBaslik)) return false;
+    
     return true;
 }
 
-// SADECE HAKMAR VE TARIM KREDİ EKLENDİ
+// Tüm Marketler ve Algılama Kuralları
 const MARKET_DESENLERI = [
     ['Migros', /migros/],
     ['A101', /a101/],
@@ -84,11 +105,12 @@ const MARKET_DESENLERI = [
     ['Şok', /(^|[^a-z0-9])sok([^a-z0-9]|$)|sokmarket/],
     ['CarrefourSA', /carrefour/],
     ['Hakmar', /hakmar/],
-    ['Tarım Kredi', /tarim_kredi|tarim kredi/]
+    ['Tarım Kredi', /tarim_kredi|tarim kredi/],
+    ['Mopaş', /mopas|mopaş/],
+    ['Onur Market', /onur/]
 ];
 
-// SADECE HAKMAR VE TARIM KREDİ EKLENDİ
-const TUM_MARKETLER = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA', 'Hakmar', 'Tarım Kredi'];
+const TUM_MARKETLER = ['A101', 'Migros', 'BİM', 'Şok', 'CarrefourSA', 'Hakmar', 'Tarım Kredi', 'Mopaş', 'Onur Market'];
 
 // Önce market adına, bulunamazsa görsel adresine bakar
 function anaMarka(item) {
@@ -100,6 +122,7 @@ function anaMarka(item) {
     return null;
 }
 
+// Eşzamanlı Arama Havuzu (Sunucuyu yormadan hızlı arama yapar)
 async function havuz(liste, limit, fn) {
     const sonuc = new Array(liste.length);
     let sira = 0;
@@ -113,13 +136,15 @@ async function havuz(liste, limit, fn) {
     return sonuc;
 }
 
+// ANA FONKSİYON: Sepeti Optimize Eder
 async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
+    // Gelen ürünleri başlık formatına çevir
     const basliklar = istenenUrunler
         .map((u) => (typeof u === 'string' ? u : (u && u.baslik) || ''))
         .map((s) => String(s).trim())
         .filter(Boolean);
 
-    // Her ürün için, her marketteki en ucuz AYNI ürünü bul
+    // Her ürün için, her marketteki en ucuz AYNI ürünü bul (Limit: 3 - Hız ve stabilite dengesi)
     const aramaSonuclari = await havuz(basliklar, 3, async (baslik) => {
         let ham = [];
         try { ham = (await aramaFonksiyonu(baslik, 41.0082, 28.9784)) || []; }
@@ -129,10 +154,14 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
         for (const item of ham) {
             if (!item || !item.title || item.price === undefined || item.price === null) continue;
             if (!ayniUrunMu(baslik, item.title)) continue;
+            
             const market = anaMarka(item);
             if (!market) continue;
+            
             const fiyatSayi = fiyatCevir(item.price);
             if (fiyatSayi >= 999999) continue;
+            
+            // Eğer bu markette bu ürünün daha ucuzu yoksa kaydet
             if (!marketBazli[market] || fiyatSayi < marketBazli[market].fiyatSayi) {
                 marketBazli[market] = { title: item.title, price: item.price, fiyatSayi };
             }
@@ -148,14 +177,20 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
     const bulunamayanlar = [];
     let hibritToplam = 0;
 
+    // HİBRİT SEPET HESABI (Her ürünü en ucuz olduğu marketten al)
     basliklar.forEach((baslik, i) => {
         const marketBazli = aramaSonuclari[i];
         let enUcuz = null;
+        
         for (const [market, kayit] of Object.entries(marketBazli)) {
             if (!marketVerisi[market]) marketVerisi[market] = {}; 
-            marketVerisi[market][baslik] = kayit;
-            if (!enUcuz || kayit.fiyatSayi < enUcuz.fiyatSayi) enUcuz = { ...kayit, market };
+            marketVerisi[market][baslik] = kayit; // Tek market listeleri için kaydet
+            
+            if (!enUcuz || kayit.fiyatSayi < enUcuz.fiyatSayi) {
+                enUcuz = { ...kayit, market, urunAdi: baslik };
+            }
         }
+        
         if (enUcuz) {
             hibritSepet.push({ urunAdi: baslik, market: enUcuz.market, title: enUcuz.title, price: enUcuz.price });
             hibritToplam += enUcuz.fiyatSayi;
@@ -164,24 +199,37 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
         }
     });
 
+    // TEK MARKET LİSTELERİ HESABI
     const liste = [];
     for (const market of TUM_MARKETLER) {
         let toplam = 0;
         const bulunan = [];
         const eksik = [];
+        
         for (const baslik of basliklar) {
             const kayit = marketVerisi[market][baslik];
-            if (kayit) { toplam += kayit.fiyatSayi; bulunan.push(kayit); }
-            else eksik.push(baslik);
+            if (kayit) { 
+                toplam += kayit.fiyatSayi; 
+                bulunan.push(kayit); 
+            } else { 
+                eksik.push(baslik); 
+            }
         }
         
-        liste.push({
-            market, toplam: toplam.toFixed(2) + ' TL', toplamSayi: toplam,
-            bulunanUrunler: bulunan, eksikUrunler: eksik, tamSepet: eksik.length === 0
-        });
+        // Sadece en az 1 ürün bulunan marketleri listeye ekle
+        if (bulunan.length > 0) {
+            liste.push({
+                market, 
+                toplam: toplam.toFixed(2) + ' TL', 
+                toplamSayi: toplam,
+                bulunanUrunler: bulunan, 
+                eksikUrunler: eksik, 
+                tamSepet: eksik.length === 0
+            });
+        }
     }
     
-    // Eksiksiz sepetler önce (ucuzdan pahalıya), sonra en az eksiği olanlar
+    // Sıralama: En az eksiği olanlar önce, sonra en ucuz olanlar
     liste.sort((a, b) =>
         a.eksikUrunler.length - b.eksikUrunler.length || a.toplamSayi - b.toplamSayi);
 
@@ -189,7 +237,7 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
         success: true,
         hibrit: { sepet: hibritSepet, toplam: hibritToplam.toFixed(2) + ' TL', bulunamayanlar },
         tekMarketler: liste,
-        tekMarketListesi: liste
+        tekMarketListesi: liste // Eski kodlarla uyumluluk için
     };
 }
 
