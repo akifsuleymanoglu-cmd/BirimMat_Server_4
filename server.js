@@ -6,6 +6,8 @@ const yardimcilar = require('./yardimcilar');
 const { tarifBul, durumRapor: tarifDurum } = require('./tarifler');
 const { karmaArama, durumRapor: fiyatDurum } = require('./fiyatlar');
 const { sepetiOptimizeEt, fiyatCevir, ayniUrunMu } = require('./sepet');
+const { malzemeleriEslestir } = require('./malzeme');
+const { tarifSepetiHazirla } = require('./tarif_sepeti');
 
 const normalize = yardimcilar.normalize;
 // yardimcilar.js'te marketLogoBul yoksa sunucu çökmesin
@@ -155,6 +157,36 @@ app.post('/api/sepet-optimize', async (req, res) => {
 });
 
 // ================================================================
+// 2b. TARİF MALZEMESİ EŞLEŞTİRME (/api/malzeme-eslestir) -> mantık malzeme.js içinde
+// ================================================================
+app.post('/api/malzeme-eslestir', async (req, res) => {
+    try {
+        const liste = Array.isArray(req.body.malzemeler) ? req.body.malzemeler.slice(0, 40) : [];
+        if (liste.length === 0) return res.status(400).json({ success: false, message: 'Malzeme listesi boş.' });
+        res.json({ success: true, sonuclar: await malzemeleriEslestir(liste, karmaArama) });
+    } catch (error) {
+        console.error('❌ Malzeme eşleştirme hatası:', error);
+        res.status(500).json({ success: false, message: 'Malzemeler eşleştirilemedi.', detay: error.message });
+    }
+});
+
+// ================================================================
+// 2c. TARİF SEPETİ (/api/tarif-sepeti): aynı malzemeleri birleştirir, gereken kadar ürün hesaplar
+//     Body: { "satirlar": ["1 çay bardağı zeytinyağı", "2 su bardağı zeytinyağı", ...] }
+// ================================================================
+app.post('/api/tarif-sepeti', async (req, res) => {
+    try {
+        const ham = req.body.satirlar || req.body.malzemeler;
+        const satirlar = Array.isArray(ham) ? ham.map(String).slice(0, 60) : [];
+        if (satirlar.length === 0) return res.status(400).json({ success: false, message: 'Malzeme listesi boş.' });
+        res.json({ success: true, ...(await tarifSepetiHazirla(satirlar, karmaArama)) });
+    } catch (error) {
+        console.error('❌ Tarif sepeti hatası:', error);
+        res.status(500).json({ success: false, message: 'Tarif sepeti hesaplanamadı.', detay: error.message });
+    }
+});
+
+// ================================================================
 // 3. ŞEF TARİF MODÜLÜ (/api/tarif)
 // ================================================================
 app.get('/api/tarif', async (req, res) => {
@@ -209,7 +241,7 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
 });
 
 // ================================================================
-// 5. SAĞLIK KONTROLÜ
+// 5. SAĞLIK KONTROLÜ VE BAŞLATMA
 // ================================================================
 app.get('/api/saglik', (req, res) => {
     res.json({
@@ -221,82 +253,16 @@ app.get('/api/saglik', (req, res) => {
     });
 });
 
-// ================================================================
-// 6. BARKOD SORGULAMA (Barcode Report + Open Food Facts Çift Motorlu)
-// ================================================================
-app.get('/api/barkod-ara', async (req, res) => {
-    try {
-        const barkod = String(req.query.barkod || '').trim();
-        if (barkod.length < 8) {
-            return res.status(400).json({ success: false, message: 'Geçerli bir barkod girin.' });
-        }
-
-        console.log(`📷 Barkod sorgulanıyor: ${barkod}`);
-        let urunAdi = null;
-        let bulunanKaynak = null;
-
-        // 1. MOTOR: Barcode Report API
-        try {
-            const brRes = await axios.get('https://barcodereport.com/api/search_barcode', {
-                params: { barcode: barkod },
-                headers: { 'X-API-Key': '788502b1bde3694edd57e374066456cd' },
-                timeout: 4000 // 4 saniye bekle
-            });
-            
-            if (brRes.data && brRes.data.title) {
-                urunAdi = brRes.data.title;
-                bulunanKaynak = 'Barcode Report';
-            }
-        } catch (error) {
-            console.log(`Barcode Report bulamadı veya hata verdi:`, error.message);
-        }
-
-        // 2. MOTOR: Open Food Facts (Barcode Report bulamazsa buraya düşer)
-        if (!urunAdi) {
-            try {
-                const offRes = await axios.get(`https://world.openfoodfacts.org/api/v0/product/${barkod}.json`, { timeout: 4000 });
-                
-                if (offRes.data && offRes.data.status === 1) {
-                    const urun = offRes.data.product;
-                    urunAdi = urun.product_name_tr || urun.product_name || urun.generic_name;
-                    if (urunAdi) bulunanKaynak = 'Open Food Facts';
-                }
-            } catch (error) {
-                console.log(`Open Food Facts bulamadı veya hata verdi:`, error.message);
-            }
-        }
-
-        // Sonuçları Değerlendir
-        if (urunAdi) {
-            console.log(`✅ Ürün Bulundu (${bulunanKaynak}): ${urunAdi}`);
-            return res.json({ success: true, urunAdi: urunAdi, barkod: barkod, kaynak: bulunanKaynak });
-        }
-
-        // Hiçbir yerde bulunamadıysa
-        res.status(404).json({ success: false, message: 'Bu barkod hiçbir veritabanında bulunamadı.' });
-
-    } catch (error) {
-        console.error('❌ Genel Barkod Hatası:', error.message);
-        res.status(500).json({ success: false, message: 'Barkod sorgulanırken bir hata oluştu.' });
-    }
-});
-
-// ================================================================
-// 404 YAKALAYICI (Her zaman en altta olmalı!)
-// ================================================================
 app.use((req, res) => res.status(404).json({ success: false, message: 'Bulunamadı.' }));
 
 // Beklenmedik hatalar sunucuyu sessizce düşürmesin
 process.on('unhandledRejection', (r) => console.error('⚠️ Yakalanmamış Promise hatası:', r));
 process.on('uncaughtException', (e) => console.error('⚠️ Yakalanmamış istisna:', e));
 
-// ================================================================
-// SUNUCUYU BAŞLAT
-// ================================================================
 if (require.main === module) {
     const sunucu = app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
-        console.log('⚡ Akıllı Sepet, Barcode Report ve Geoapify entegrasyonu hazır.');
+        console.log('⚡ Akıllı Sepet ve Geoapify entegrasyonu hazır.');
     });
     sunucu.on('error', (err) => {
         console.error(err.code === 'EADDRINUSE' ? `❌ ${PORT} portu kullanımda.` : `❌ Sunucu hatası: ${err.message}`);
