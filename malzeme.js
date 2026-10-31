@@ -1,6 +1,8 @@
 // malzeme.js - Tarif malzemesi -> doğru market ürünü eşleştirme
-// ("Sarımsak 250 Gr" için ketçap, "Domates" için turşuluk domates gibi yanlış eşleşmeleri önler)
 const { fiyatCevir } = require('./sepet');
+
+// SADECE BİLDİĞİMİZ ZİNCİR MARKETLER (Abiler)
+const IZIN_VERILEN_MARKETLER = ['a101', 'bim', 'migros', 'sok', 'carrefour', 'hakmar', 'tarim kredi', 'mopas'];
 
 function norm(t) {
     return String(t || '').toLocaleLowerCase('tr-TR')
@@ -13,7 +15,6 @@ const yuvarla = (x) => Math.round(x * 100) / 100;
 const BOYUT_RE = /(\d+(?:[.,]\d+)?)\s*(kg|gr|g|litre|lt|l|ml|cl)\b/;
 const BOYUT_RE_G = new RegExp(BOYUT_RE.source, 'g');
 
-// Miktarı ortak birime çevirir: ağırlık -> gram, hacim -> ml
 function boyutBul(metin) {
     const m = norm(metin).match(BOYUT_RE);
     if (!m) return null;
@@ -44,16 +45,12 @@ function topluPaketMi(metin) {
            /\bx\s*\d+\b/.test(t) || /\b\d+\s*(adet|paket)\b/.test(t);
 }
 
-// Ham malzemeye ait olmayan, işlenmiş/hazır ürün kelimeleri (sorguda yoksa ürün elenir)
 const ISLENMIS = new Set(['ketcap', 'sos', 'sosu', 'corba', 'konserve', 'konservesi', 'tursu', 'tursuluk',
     'kurutulmus', 'cips', 'aroma', 'mayonez', 'hardal', 'pure', 'makarna', 'ezme', 'jole', 'dondurma',
     'cikolata', 'biskuvi', 'gofret', 'icecek', 'nektar', 'suyu', 'kremasi', 'tohumu']);
-// Çeşit farkı yaratan kelimeler (elenmez, ama uyarı verilir ve geri planda kalır)
 const CESIT = new Set(['mor', 'kirmizi', 'yesil', 'sivri', 'dolmalik', 'cherry', 'cheri', 'ceri', 'kapya', 'arpacik']);
 
-// aranan: "Domates salçası 700 Gr", sonuclar: [{title, price, market, ...}]
 function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
-    // secenek.gerekli = { tur: 'hacim'|'agirlik'|'adet', deger } (ml / gram / adet), secenek.yogunluk = g/ml
     const sorgu = kelimeler(arananMetin);
     if (sorgu.length === 0) return { urun: null, neden: 'Boş arama' };
     const sorguSet = new Set(sorgu);
@@ -62,10 +59,18 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
 
     const adaylar = [];
     const elenenler = [];
+    
     for (const item of sonuclar || []) {
         if (!item || !item.title) continue;
         const fiyat = fiyatCevir(item.price);
         if (fiyat >= 999999) continue;
+
+        // 🚀 YEREL ESNAF FİLTRESİ: Sadece bildiğimiz zincir marketler
+        const urunMarket = norm(item.market || '');
+        if (!IZIN_VERILEN_MARKETLER.some(m => urunMarket.includes(m))) {
+            ret('zincir market değil'); 
+            continue; 
+        }
 
         const gelen = kelimeler(item.title);
         const gelenSet = new Set(gelen);
@@ -80,7 +85,7 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         const gb = boyutBul(item.title);
         let tier = 0;
         let uyari = null;
-        let paket = null;   // tarif için kaç paket gerekir, ne öderiz, tarifteki payın maliyeti
+        let paket = null;
         if (secenek.gerekli) {
             const g = secenek.gerekli;
             if (adetModu) {
@@ -113,7 +118,7 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         const cesit = gelen.filter((k) => CESIT.has(k) && !sorguSet.has(k));
         const cesitUyari = cesit.length > 0 ? `Çeşit farkı: ${cesit.join(' ')}` : null;
         const ekstra = gelen.filter((k) => !sorguSet.has(k) && !/^\d+$/.test(k)).length;
-        const birimFiyat = gb ? fiyat / (gb.deger / 1000) : null;   // TL / kg veya TL / lt
+        const birimFiyat = gb ? fiyat / (gb.deger / 1000) : null;
 
         adaylar.push({
             item, tier, ekstra, fiyat, birimFiyat,
@@ -124,7 +129,6 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         });
     }
 
-    // Sıralama: boyut uyumu > çeşit farkı yok > en ucuz (birim fiyata göre) > az ekstra kelime
     adaylar.sort((a, b) => a.tier - b.tier || Number(a.cesit) - Number(b.cesit) ||
                            a.anahtar - b.anahtar || a.ekstra - b.ekstra);
 
@@ -145,7 +149,6 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
     };
 }
 
-// Aramayı genişletmek için sorgu çeşitleri: tam metin + miktarsız metin
 function sorguVaryantlari(metin) {
     const bosluk = (s) => s.replace(/\s+/g, ' ').trim();
     const boyutsuz = bosluk(String(metin).replace(/\d+(?:[.,]\d+)?\s*(?:kg|gr|g|litre|lt|l|ml|cl)\b/gi, ''));
@@ -161,7 +164,6 @@ async function havuz(liste, limit, fn) {
     return sonuc;
 }
 
-// Tarifteki malzeme listesini eşleştirir; tekrar eden malzemeleri tek satıra indirir
 async function malzemeleriEslestir(malzemeler, aramaFonksiyonu) {
     const tekil = new Map();
     for (const m of malzemeler) {
