@@ -1,9 +1,6 @@
 // malzeme.js - Tarif malzemesi -> doğru market ürünü eşleştirme
 const { fiyatCevir } = require('./sepet');
 
-// SADECE BİLDİĞİMİZ ZİNCİR MARKETLER (Abiler)
-const IZIN_VERILEN_MARKETLER = ['a101', 'bim', 'migros', 'sok', 'carrefour', 'hakmar', 'tarim kredi', 'mopas'];
-
 function norm(t) {
     return String(t || '').toLocaleLowerCase('tr-TR')
         .replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g')
@@ -68,12 +65,10 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         const gelen = kelimeler(item.title);
         const gelenSet = new Set(gelen);
         
-        // HATA DÜZELTİLDİ: ret fonksiyonu artık kullanılmadan hemen önce tanımlanıyor
         const ret = (neden) => elenenler.push(`${item.title} (${neden})`);
 
-        // 🚀 YEREL ESNAF FİLTRESİ: Sadece bildiğimiz zincir marketler
-        const urunMarket = norm(item.market || '');
-        if (!IZIN_VERILEN_MARKETLER.some(m => urunMarket.includes(m))) {
+        // 🚀 YEREL ESNAF FİLTRESİ (server.js'den temizlenmiş olarak geliyor)
+        if (item.market === 'Yerel Esnaf') {
             ret('zincir market değil'); 
             continue; 
         }
@@ -184,14 +179,13 @@ async function malzemeleriEslestir(malzemeler, aramaFonksiyonu) {
         for (const sorgu of sorguVaryantlari(ad)) {
             let ham = [];
             try { ham = (await aramaFonksiyonu(sorgu, 41.0082, 28.9784)) || []; }
-            catch (e) { console.error(`❌ Malzeme araması hatası (${sorgu}):`, e.message); }
+            catch (e) { }
             for (const x of ham) {
                 const kilit = `${x.market}|${x.title}|${x.price}`;
                 if (!goruldu.has(kilit)) { goruldu.add(kilit); toplam.push(x); }
             }
         }
         const sonuc = enUygunUrunBul(ad, toplam);
-        console.log(`🥕 Malzeme "${ad}": ham=${toplam.length}, ${sonuc.urun ? 'bulundu: ' + sonuc.urun.title : 'BULUNAMADI'}`);
         return { aranan: ad, tekrar, bulundu: !!sonuc.urun, ...sonuc };
     });
 }
