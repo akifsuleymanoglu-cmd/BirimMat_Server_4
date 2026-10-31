@@ -65,6 +65,12 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         const fiyat = fiyatCevir(item.price);
         if (fiyat >= 999999) continue;
 
+        const gelen = kelimeler(item.title);
+        const gelenSet = new Set(gelen);
+        
+        // HATA DÜZELTİLDİ: ret fonksiyonu artık kullanılmadan hemen önce tanımlanıyor
+        const ret = (neden) => elenenler.push(`${item.title} (${neden})`);
+
         // 🚀 YEREL ESNAF FİLTRESİ: Sadece bildiğimiz zincir marketler
         const urunMarket = norm(item.market || '');
         if (!IZIN_VERILEN_MARKETLER.some(m => urunMarket.includes(m))) {
@@ -72,13 +78,10 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
             continue; 
         }
 
-        const gelen = kelimeler(item.title);
-        const gelenSet = new Set(gelen);
-        const ret = (neden) => elenenler.push(`${item.title} (${neden})`);
-
         if (!sorgu.every((k) => gelenSet.has(k))) { ret('kelime tutmuyor'); continue; }
         const islenmis = gelen.find((k) => ISLENMIS.has(k) && !sorguSet.has(k));
         if (islenmis) { ret(`işlenmiş ürün: ${islenmis}`); continue; }
+        
         const adetModu = !!(secenek.gerekli && secenek.gerekli.tur === 'adet');
         if (topluPaketMi(item.title) && !sorguToplu && !adetModu) { ret('çoklu paket'); continue; }
 
@@ -86,6 +89,7 @@ function enUygunUrunBul(arananMetin, sonuclar, secenek = {}) {
         let tier = 0;
         let uyari = null;
         let paket = null;
+        
         if (secenek.gerekli) {
             const g = secenek.gerekli;
             if (adetModu) {
