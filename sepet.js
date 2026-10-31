@@ -54,13 +54,17 @@ function temizKelimeler(metin) {
     return kelimeler(metin).filter(k => !YOKSAYILACAK_KELIMELER.has(k));
 }
 
-// Kusursuz Ürün Eşleştirme (Yasaklı Kelimeler ve Gramaj Kontrolü ile)
+// Kusursuz Ürün Eşleştirme (Yasaklı Kelimeler ve Sıkı Gramaj Kontrolü ile)
 function ayniUrunMu(arananBaslik, gelenBaslik) {
     const arananLower = norm(arananBaslik);
     const gelenLower = norm(gelenBaslik);
     
-    // 🚀 YENİ: Yasaklı Kelime Kontrolü (Zeytin/Biber karışmasını önler)
-    const yasakliKelimeler = ['zeytin', 'salça', 'çikolata', 'krem', 'şampuan', 'çay', 'kahve', 'deterjan', 'bisküvi', 'kraker', 'köfte', 'sucuk'];
+    // 🚀 YASAKLI KELİMELER (Aranan üründe yoksa, gelen üründe varsa reddet!)
+    const yasakliKelimeler = [
+        'zeytin', 'salça', 'çikolata', 'krem', 'şampuan', 'çay', 'kahve', 'deterjan', 
+        'bisküvi', 'kraker', 'köfte', 'sucuk', 'turşu', 'turşuluk', 'dondurulmuş', 
+        'şişe', 'bidon', 'oyuncak', 'kıyafet'
+    ];
     
     for (let kelime of yasakliKelimeler) {
         if (!arananLower.includes(kelime) && gelenLower.includes(kelime)) {
@@ -79,14 +83,19 @@ function ayniUrunMu(arananBaslik, gelenBaslik) {
         gelenSet.has(k) || (k.length >= 5 && gelen.some((g) => g.startsWith(k))));
     if (!kelimeTamam) return false;
 
-    // 2. MİKTAR (Hacim/Ağırlık) KONTROLÜ
+    // 2. SIKI MİKTAR (Hacim/Ağırlık) KONTROLÜ
     const ab = boyutBul(arananBaslik);
     const gb = boyutBul(gelenBaslik);
 
     if (ab && gb) {
         if (gb.tur !== ab.tur) return false; // Biri ağırlık biri hacimse reddet
-        // Miktarlar arasında çok uçuk bir fark varsa reddet (Örn: 400 ml isteniyorsa 5 L gelmesin)
-        if (gb.deger < (ab.deger * 0.5) || gb.deger > (ab.deger * 3)) return false;
+        
+        // 🚀 YENİ KURAL: Gelen ürün, aranan miktarın %90'ından daha az olamaz!
+        // Örn: 700 Gr aranıyorsa, 600 Gr (%85) reddedilir. 650 Gr kabul edilir.
+        // Ayrıca 3 katından fazla devasa ürünler de reddedilir.
+        if (gb.deger < (ab.deger * 0.90) || gb.deger > (ab.deger * 3)) {
+            return false;
+        }
     } else if (ab && !gb) {
         return false; // Aranan üründe miktar var ama gelen üründe yoksa reddet
     }
