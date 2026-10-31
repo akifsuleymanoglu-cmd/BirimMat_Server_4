@@ -1,4 +1,4 @@
-// server.js - BirimMat backend (Render).
+// server.js - BirimMat backend (Render) - TAM VE ENTEGRE VERSİYON
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -54,12 +54,13 @@ async function geoapifyKoordinatBul(mahalle, ilce, il) {
     }
 }
 
-// 🚀 GÜNCELLENDİ: Şube adını temizleyip sadece ana markayı döndürür
+// 🚀 KUSURSUZ MARKET TANIMA (Dimes'i de Abileri de kurtarır)
 function anaMarkaBul(item) {
     const market = normalize(String(item.market || ''));
     const resim = String(item.productImage || '').toLowerCase();
     const metin = market + ' ' + resim;
     
+    // Abilerimiz
     if (metin.includes('a101')) return 'A101';
     if (metin.includes('migros')) return 'Migros';
     if (metin.includes('bim')) return 'BİM';
@@ -68,8 +69,11 @@ function anaMarkaBul(item) {
     if (metin.includes('hakmar')) return 'Hakmar';
     if (metin.includes('tarim_kredi') || metin.includes('tarım kredi')) return 'Tarım Kredi';
     if (metin.includes('mopas') || metin.includes('mopaş')) return 'Mopaş';
+    if (metin.includes('file')) return 'File Market';
     
-    return 'Yerel Esnaf'; // Bunlar malzeme.js'de elenecek
+    // Eğer market adı "A101 Doğancılar" gibi bir şubeyse, yukarıdaki if bloğu onu yakalar ve sadece "A101" döner.
+    // Eğer yukarıdakilerin hiçbirine uymuyorsa, o zaman gerçekten yerel bir esnaftır.
+    return 'Yerel Esnaf'; 
 }
 
 // ================================================================
@@ -108,11 +112,11 @@ app.get('/api/ara', async (req, res) => {
 
         let sonuclar = hamSonuclar.map((item) => ({
             ...item,
-            market: anaMarkaBul(item),
+            market: anaMarkaBul(item), // Abileri ve Dimes'i kurtaran yer
             fiyatSayi: fiyatCevir(item.price)
         }));
 
-        // "Yerel Esnaf" olanları normal aramada da gösterme (Jüri sadece zincir marketleri görsün)
+        // Yerel esnafları listeden çıkar (Sadece Abiler kalsın)
         sonuclar = sonuclar.filter(item => item.market !== 'Yerel Esnaf');
 
         const gorulenler = new Set();
@@ -185,9 +189,7 @@ app.post('/api/tarif-sepeti', async (req, res) => {
 // ================================================================
 const ORNEK_TARIF = [
     '1 çay bardağı zeytinyağı', '5 adet kemer patlıcan', '3 adet soğan', '8 diş sarımsak', '4 adet domates',
-    '4 adet sivri biber', '2 çay kaşığı toz şeker', '2 su bardağı sıcak su', '1 çay kaşığı tuz',
-    '1 çay kaşığı karabiber', '2 su bardağı zeytinyağı', '3 yemek kaşığı zeytinyağı', '1 adet domates',
-    '1 tatlı kaşığı domates salçası', '1 tutam tuz'
+    '4 adet sivri biber', '2 çay kaşığı toz şeker', '2 su bardağı sıcak su', '1 çay kaşığı tuz'
 ];
 app.get('/api/tarif-sepeti-test', async (req, res) => {
     try {
@@ -195,18 +197,7 @@ app.get('/api/tarif-sepeti-test', async (req, res) => {
             ? String(req.query.satirlar).split('|').map((x) => x.trim()).filter(Boolean).slice(0, 40)
             : ORNEK_TARIF;
         const sonuc = await tarifSepetiHazirla(satirlar, karmaArama);
-        const ozet = sonuc.malzemeler.map((m) => {
-            const bas = `${m.ad} (${m.tekrar} satır) = ${m.toplamYazi || 'miktar belirsiz'}`;
-            if (m.ucretsiz) return `${bas} -> ücretsiz`;
-            if (!m.bulundu) return `${bas} -> BULUNAMADI`;
-            const p = m.urun.paket;
-            return `${bas} -> ${m.urun.market}: ${m.urun.title}` +
-                (p ? ` x${p.adet} = ${p.odenecek} TL (tarifteki pay: ${p.tarifMaliyeti === null ? '?' : p.tarifMaliyeti + ' TL'})` : ` = ${m.urun.price}`);
-        });
-        res.json({
-            success: true, satirSayisi: satirlar.length, malzemeSayisi: sonuc.malzemeler.length,
-            ozet, toplamlar: sonuc.toplamlar, ...(req.query.detay === '1' ? { detay: sonuc.malzemeler } : {})
-        });
+        res.json({ success: true, toplamlar: sonuc.toplamlar, detay: sonuc.malzemeler });
     } catch (error) {
         res.status(500).json({ success: false, detay: error.message });
     }
@@ -254,7 +245,7 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
                 ? ayni.reduce((a, b) => (fiyatCevir(b.price) < fiyatCevir(a.price) ? b : a))
                 : ham[0];
             sonuclar.push(iyi
-                ? { arananAd: urunAdi, guncelFiyat: iyi.price, market: iyi.market }
+                ? { arananAd: urunAdi, guncelFiyat: iyi.price, market: anaMarkaBul(iyi) }
                 : { arananAd: urunAdi, guncelFiyat: null, market: null });
         }
         res.json({ success: true, sonuclar });
@@ -264,13 +255,47 @@ app.post('/api/fiyat-kontrol', async (req, res) => {
 });
 
 // ================================================================
-// 5. SAĞLIK KONTROLÜ
+// 5. BARKOD SORGULAMA (Barcode Report + Open Food Facts)
+// ================================================================
+app.get('/api/barkod-ara', async (req, res) => {
+    try {
+        const barkod = String(req.query.barkod || '').trim();
+        if (barkod.length < 8) return res.status(400).json({ success: false, message: 'Geçerli bir barkod girin.' });
+
+        let urunAdi = null;
+        
+        // 1. Open Food Facts
+        try {
+            const offRes = await axios.get(`https://world.openfoodfacts.org/api/v0/product/${barkod}.json`, { timeout: 5000 });
+            if (offRes.data && offRes.data.status === 1) {
+                urunAdi = offRes.data.product.product_name_tr || offRes.data.product.product_name || offRes.data.product.generic_name;
+            }
+        } catch (e) {}
+
+        // 2. Barcode Report (Eğer OFF bulamazsa)
+        if (!urunAdi) {
+            try {
+                const brRes = await axios.get('https://barcodereport.com/api/search_barcode', {
+                    params: { barcode: barkod }, headers: { 'X-API-Key': '788502b1bde3694edd57e374066456cd' }, timeout: 5000
+                });
+                if (brRes.data && brRes.data.title) urunAdi = brRes.data.title;
+            } catch (e) {}
+        }
+
+        if (urunAdi) return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
+        res.status(404).json({ success: false, message: 'Barkod veritabanlarında bulunamadı.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Barkod sorgulanırken hata oluştu.' });
+    }
+});
+
+// ================================================================
+// 6. SAĞLIK KONTROLÜ
 // ================================================================
 app.get('/api/saglik', (req, res) => {
     res.json({
         success: true,
         uptimeSn: Math.round(process.uptime()),
-        bellekMB: Math.round(process.memoryUsage().rss / 1048576),
         fiyatKaynaklari: fiyatDurum(),
         tarifKaynaklari: tarifDurum()
     });
@@ -283,10 +308,9 @@ process.on('uncaughtException', (e) => console.error('⚠️ Yakalanmamış isti
 
 if (require.main === module) {
     const sunucu = app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Sunucu Aktif: http://localhost:${PORT}`);
+        console.log(`🚀 Sunucu Aktif: ${PORT}`);
     });
     sunucu.on('error', (err) => {
-        console.error(err.code === 'EADDRINUSE' ? `❌ ${PORT} portu kullanımda.` : `❌ Sunucu hatası: ${err.message}`);
         process.exit(1);
     });
 }
