@@ -1,4 +1,4 @@
-// sepet.js - Gelişmiş Alaka Düzeyi (Relevance Score) ve Ağırlıklı Sıralama Motoru
+// sepet.js - Gelişmiş Zıt-Anlam ve Renk Filtreli Akıllı Arama Motoru
 
 function norm(t) {
     return String(t || '').toLocaleLowerCase('tr-TR')
@@ -34,66 +34,79 @@ function boyutBul(metin) {
     }
 }
 
-// 🚀 GELİŞMİŞ ALGORİTMA: Kelime Eşleşme Puanı Hesaplama (0 - 100)
-function urunSkoruHesapla(arananBaslik, gelenBaslik) {
+function topluPaketMi(metin) {
+    const t = norm(metin);
+    return /\bkoli\b/.test(t) || /\b\d+\s*'?\s*(li|lu)\b/.test(t) || /\b\d+\s*x\s*\d+/.test(t) ||
+           /\bx\s*\d+\b/.test(t) || /\b\d+\s*(adet|paket)\b/.test(t);
+}
+
+function kelimeler(metin) {
+    return norm(metin).replace(BOYUT_RE_G, ' ').replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/).filter((k) => k.length > 0);
+}
+
+const YOKSAYILACAK_KELIMELER = new Set(['adet', 'li', 'lu', 'x', 'tane', 'kek', 'bisküvi', 'gram', 'gr', 'boy', 'kuru', 'taze', 'büyük', 'küçük', 'orta']);
+function temizKelimeler(metin) {
+    return kelimeler(metin).filter(k => !YOKSAYILACAK_KELIMELER.has(k));
+}
+
+// 🚀 EN AKILLI FİLTRE: Zıt Anlamlı ve Renk Çakışmalarını Engeller
+function ayniUrunMu(arananBaslik, gelenBaslik) {
     const arananLower = norm(arananBaslik);
     const gelenLower = norm(gelenBaslik);
-    
-    let skor = 0;
-    const arananKelimeler = arananLower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(k => k.length > 1);
-    const gelenKelimeler = gelenLower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(k => k.length > 1);
-    
-    if (arananKelimeler.length === 0) return 0;
 
-    // 1. Kelime Eşleşmeleri (+20 Puan)
-    let eslesenKelime = 0;
-    for (let ak of arananKelimeler) {
-        if (gelenKelimeler.some(gk => gk === ak || gk.startsWith(ak) || ak.startsWith(gk))) {
-            eslesenKelime++;
-            skor += 20; 
+    // 1. RENK VE TÜR ÇAKIŞMA FİLTRESİ (Zıt olanları reddet)
+    const zitKelimeler = {
+        'toz': ['esmer', 'kup', 'pudra', 'kesme'],
+        'esmer': ['toz', 'beyaz'],
+        'kirmizi': ['yesil', 'sari', 'siyah'],
+        'yesil': ['kirmizi', 'sari', 'siyah'],
+        'sari': ['kirmizi', 'yesil', 'siyah'],
+        'beyaz': ['esmer', 'siyah'],
+        'siyah': ['beyaz', 'kirmizi', 'yesil']
+    };
+
+    for (let kelime in zitKelimeler) {
+        // Eğer aranan üründe bu kelime varsa (Örn: toz)
+        if (arananLower.includes(kelime)) {
+            let zitlar = zitKelimeler[kelime];
+            for (let i = 0; i < zitlar.length; i++) {
+                // Gelen üründe zıttı varsa (Örn: esmer) -> REDDET!
+                if (gelenLower.includes(zitlar[i])) return false;
+            }
         }
     }
-    // Eğer aranan kelimelerin yarısından azı eşleştiyse direkt 0 ver (alakasız ürün)
-    if (eslesenKelime < arananKelimeler.length * 0.5) return 0;
 
-    // 2. Zıt Anlamlı / Çeldirici Kelime Cezası (-50 Puan)
-    const renkler = ['kirmizi', 'yesil', 'sari', 'siyah', 'beyaz', 'mor', 'turuncu', 'esmer', 'kahverengi'];
-    for (let renk of renkler) {
-        // Aranan üründe renk yok ama gelen üründe varsa ağır ceza kes!
-        if (gelenLower.includes(renk) && !arananLower.includes(renk)) {
-            skor -= 50; 
-        }
-    }
-    
-    const yasakli = ['zeytin', 'salca', 'cikolata', 'krem', 'sampuan', 'cay', 'kahve', 'deterjan', 'biskuvi', 'kraker', 'kofte', 'sucuk', 'tursu', 'dondurulmus'];
+    // 2. GENEL YASAKLI KELİMELER
+    const yasakli = ['zeytin', 'salça', 'çikolata', 'krem', 'şampuan', 'çay', 'kahve', 'deterjan', 'bisküvi', 'kraker', 'köfte', 'sucuk', 'turşu', 'turşuluk', 'dondurulmuş'];
     for (let y of yasakli) {
-        if (gelenLower.includes(y) && !arananLower.includes(y)) {
-            skor -= 40;
-        }
+        if (!arananLower.includes(y) && gelenLower.includes(y)) return false;
     }
 
-    // 3. Gramaj / Hacim Uyumu (+30 Puan veya -30 Ceza)
+    // 3. KELİME EŞLEŞMESİ
+    const aranan = temizKelimeler(arananBaslik);
+    const gelen = temizKelimeler(gelenBaslik);
+    if (aranan.length === 0) return false;
+    
+    const gelenSet = new Set(gelen);
+    const kelimeTamam = aranan.every((k) =>
+        gelenSet.has(k) || (k.length >= 5 && gelen.some((g) => g.startsWith(k))));
+    if (!kelimeTamam) return false;
+
+    // 4. MİKTAR KONTROLÜ (Aranan miktarın %90'ından az olamaz)
     const ab = boyutBul(arananBaslik);
     const gb = boyutBul(gelenBaslik);
-    
     if (ab && gb) {
-        if (gb.tur === ab.tur) {
-            // Aranan miktar ile gelen miktar birbirine çok yakınsa (+30)
-            if (Math.abs(gb.deger - ab.deger) < (ab.deger * 0.1)) skor += 30;
-            // Gelen miktar arananın %90'ından azsa veya 3 katından fazlaysa (-30)
-            else if (gb.deger < (ab.deger * 0.90) || gb.deger > (ab.deger * 3)) skor -= 30;
-            else skor += 10; // Farklı ama kabul edilebilir aralıkta
-        } else {
-            skor -= 20; // Biri ağırlık biri hacimse ceza
-        }
+        if (gb.tur !== ab.tur) return false;
+        if (gb.deger < (ab.deger * 0.90) || gb.deger > (ab.deger * 3)) return false;
     } else if (ab && !gb) {
-        skor -= 20; // Arananın gramajı var ama gelenin yok
+        return false; 
     }
 
-    // 4. Tam Eşleşme Bonusu (+50 Puan)
-    if (gelenLower.includes(arananLower)) skor += 50;
-
-    return Math.max(0, skor); // Skor eksiye düşmesin
+    // 5. TOPLU PAKET KONTROLÜ
+    if (topluPaketMi(arananBaslik) !== topluPaketMi(gelenBaslik)) return false;
+    
+    return true;
 }
 
 const MARKET_DESENLERI = [
@@ -135,26 +148,19 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
         catch (e) { console.error(`❌ Hata (${baslik}):`, e.message); }
 
         const marketBazli = {};
-        
         for (const item of ham) {
             if (!item || !item.title || item.price === undefined) continue;
+            // 🚀 AKILLI FİLTRE BURADA ÇALIŞIYOR
+            if (!ayniUrunMu(baslik, item.title)) continue;
             
-            // 🚀 SİHİR BURADA: Her ürün için bir kalite puanı hesaplıyoruz
-            const skor = urunSkoruHesapla(baslik, item.title);
-            
-            // Eğer ürünün puanı çok düşükse (alakasızsa) direkt atla (Örn: 40 puan altı)
-            if (skor < 40) continue; 
-
             const market = anaMarka(item);
             if (!market) continue;
             
             const fiyatSayi = fiyatCevir(item.price);
             if (fiyatSayi >= 999999) continue;
             
-            // Eğer bu markette bu ürünün daha önce kaydedilmiş bir sürümü yoksa VEYA 
-            // yeni gelen ürünün SKORU daha yüksekse, bu ürünü kaydet.
-            if (!marketBazli[market] || skor > marketBazli[market].skor || (skor === marketBazli[market].skor && fiyatSayi < marketBazli[market].fiyatSayi)) {
-                marketBazli[market] = { title: item.title, price: item.price, fiyatSayi, skor };
+            if (!marketBazli[market] || fiyatSayi < marketBazli[market].fiyatSayi) {
+                marketBazli[market] = { title: item.title, price: item.price, fiyatSayi };
             }
         }
         return marketBazli;
@@ -209,4 +215,4 @@ async function sepetiOptimizeEt(istenenUrunler, aramaFonksiyonu) {
     };
 }
 
-module.exports = { sepetiOptimizeEt, fiyatCevir };
+module.exports = { sepetiOptimizeEt, fiyatCevir, ayniUrunMu };
