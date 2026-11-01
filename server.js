@@ -1,4 +1,4 @@
-// server.js - BirimMat backend (Render) - TAM VE ENTEGRE VERSİYON
+// server.js - BirimMat backend (Render) - GÜVENLİK GÜNCELLEMESİ YAPILDI
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -16,6 +16,9 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const ARA_CACHE_SURESI = 3 * 60 * 1000;
 const VARSAYILAN_KONUM = { lat: 41.0082, lon: 28.9784 };
+
+// 🚀 GÜVENLİK: API Anahtarı artık kodun içinde değil, Render'daki Environment (Ortam Değişkenleri) kısmından okunuyor.
+const BARCODE_REPORT_API_KEY = process.env.BARCODE_REPORT_API_KEY || 'ANAHTAR_BURADA_YOK_RENDER_A_EKLEYIN';
 
 app.disable('x-powered-by');
 app.use(cors());
@@ -54,13 +57,12 @@ async function geoapifyKoordinatBul(mahalle, ilce, il) {
     }
 }
 
-// 🚀 KUSURSUZ MARKET TANIMA (Dimes'i de Abileri de kurtarır)
+// 🚀 MARKET TANIMA (Abileri korur, yerel esnafı filtreler)
 function anaMarkaBul(item) {
     const market = normalize(String(item.market || ''));
     const resim = String(item.productImage || '').toLowerCase();
     const metin = market + ' ' + resim;
     
-    // Abilerimiz
     if (metin.includes('a101')) return 'A101';
     if (metin.includes('migros')) return 'Migros';
     if (metin.includes('bim')) return 'BİM';
@@ -71,8 +73,6 @@ function anaMarkaBul(item) {
     if (metin.includes('mopas') || metin.includes('mopaş')) return 'Mopaş';
     if (metin.includes('file')) return 'File Market';
     
-    // Eğer market adı "A101 Doğancılar" gibi bir şubeyse, yukarıdaki if bloğu onu yakalar ve sadece "A101" döner.
-    // Eğer yukarıdakilerin hiçbirine uymuyorsa, o zaman gerçekten yerel bir esnaftır.
     return 'Yerel Esnaf'; 
 }
 
@@ -93,10 +93,7 @@ app.get('/api/ara', async (req, res) => {
         let { lat, lon } = VARSAYILAN_KONUM;
         if (il || ilce || mahalle) {
             const koordinat = await geoapifyKoordinatBul(mahalle, ilce, il);
-            if (koordinat) {
-                lat = koordinat.lat;
-                lon = koordinat.lon;
-            }
+            if (koordinat) { lat = koordinat.lat; lon = koordinat.lon; }
         }
 
         const cacheKey = 'ara:' + normalize(arananUrun) + ':' + lat.toFixed(3) + ':' + lon.toFixed(3);
@@ -112,11 +109,11 @@ app.get('/api/ara', async (req, res) => {
 
         let sonuclar = hamSonuclar.map((item) => ({
             ...item,
-            market: anaMarkaBul(item), // Abileri ve Dimes'i kurtaran yer
+            market: anaMarkaBul(item),
             fiyatSayi: fiyatCevir(item.price)
         }));
 
-        // Yerel esnafları listeden çıkar (Sadece Abiler kalsın)
+        // Sadece zincir marketleri listele
         sonuclar = sonuclar.filter(item => item.market !== 'Yerel Esnaf');
 
         const gorulenler = new Set();
@@ -133,8 +130,7 @@ app.get('/api/ara', async (req, res) => {
             id: index + 1, title: item.title, price: item.price, unitPrice: item.unitPrice,
             market: item.market, kaynak: item.kaynak, storeIcon: item.storeIcon || '🛒', link: item.link,
             isBulk: !!item.isBulk, supheli: !!item.supheli, benzer: !!item.benzer, guncelleme: item.guncelleme,
-            marketLogo: marketLogoBul(item.market),
-            productImage: item.productImage
+            marketLogo: marketLogoBul(item.market), productImage: item.productImage
         }));
 
         cacheSet(cacheKey, finalSonuclar);
@@ -181,25 +177,6 @@ app.post('/api/tarif-sepeti', async (req, res) => {
         res.json({ success: true, ...(await tarifSepetiHazirla(satirlar, karmaArama)) });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Tarif sepeti hesaplanamadı.', detay: error.message });
-    }
-});
-
-// ================================================================
-// 2d. TARİF SEPETİ TEST (/api/tarif-sepeti-test)
-// ================================================================
-const ORNEK_TARIF = [
-    '1 çay bardağı zeytinyağı', '5 adet kemer patlıcan', '3 adet soğan', '8 diş sarımsak', '4 adet domates',
-    '4 adet sivri biber', '2 çay kaşığı toz şeker', '2 su bardağı sıcak su', '1 çay kaşığı tuz'
-];
-app.get('/api/tarif-sepeti-test', async (req, res) => {
-    try {
-        const satirlar = req.query.satirlar
-            ? String(req.query.satirlar).split('|').map((x) => x.trim()).filter(Boolean).slice(0, 40)
-            : ORNEK_TARIF;
-        const sonuc = await tarifSepetiHazirla(satirlar, karmaArama);
-        res.json({ success: true, toplamlar: sonuc.toplamlar, detay: sonuc.malzemeler });
-    } catch (error) {
-        res.status(500).json({ success: false, detay: error.message });
     }
 });
 
@@ -276,10 +253,14 @@ app.get('/api/barkod-ara', async (req, res) => {
         if (!urunAdi) {
             try {
                 const brRes = await axios.get('https://barcodereport.com/api/search_barcode', {
-                    params: { barcode: barkod }, headers: { 'X-API-Key': '788502b1bde3694edd57e374066456cd' }, timeout: 5000
+                    params: { barcode: barkod }, 
+                    headers: { 'X-API-Key': BARCODE_REPORT_API_KEY }, // 🚀 GÜVENLİ OKUMA
+                    timeout: 5000
                 });
                 if (brRes.data && brRes.data.title) urunAdi = brRes.data.title;
-            } catch (e) {}
+            } catch (e) {
+                console.error("Barcode Report Hatası:", e.message);
+            }
         }
 
         if (urunAdi) return res.json({ success: true, urunAdi: urunAdi, barkod: barkod });
